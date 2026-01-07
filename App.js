@@ -11,6 +11,8 @@ import HomeScreen from './screens/HomeScreen';
 import GameScreen from './screens/GameScreen';
 import AdminScreen from './screens/AdminScreen';
 import ManageQuestionsScreen from './screens/ManageQuestionsScreen';
+import ManageWotdScreen from './screens/ManageWotdScreen';
+import BulkAddWotdScreen from './screens/BulkAddWotdScreen';
 import AddQuestionScreen from './screens/AddQuestionScreen';
 import BulkAddScreen from './screens/BulkAddScreen';
 import SettingsScreen from './screens/SettingsScreen';
@@ -73,6 +75,16 @@ export default function App() {
               <Stack.Screen
                 name="ManageQuestions"
                 component={ManageQuestionsScreen}
+                options={{ headerShown: false }}
+              />
+              <Stack.Screen
+                name="ManageWotd"
+                component={ManageWotdScreen}
+                options={{ headerShown: false }}
+              />
+              <Stack.Screen
+                name="BulkAddWotd"
+                component={BulkAddWotdScreen}
                 options={{ headerShown: false }}
               />
               <Stack.Screen

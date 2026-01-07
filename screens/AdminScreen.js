@@ -38,6 +38,15 @@ export default function AdminScreen({ navigation }) {
                         <Text style={styles.cardTitle}>Users</Text>
                         <Text style={styles.cardDesc}>View user statistics.</Text>
                     </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={styles.card}
+                        onPress={() => navigation.navigate('ManageWotd')}
+                    >
+                        <Text style={styles.cardIcon}>📅</Text>
+                        <Text style={styles.cardTitle}>Word of the Day</Text>
+                        <Text style={styles.cardDesc}>Manage daily words.</Text>
+                    </TouchableOpacity>
                 </View>
             </View>
         </View>

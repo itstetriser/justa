@@ -4,6 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { getTranslation } from '../lib/translations';
+import { fetchUserProgress, saveProgress, updateUserPointTransaction, updateUserStreak, resetLevelProgress } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 
 if (
@@ -14,7 +15,7 @@ if (
 }
 
 export default function GameScreen({ route, navigation }) {
-    const { level, userLang = 'tr', appLang = 'en', isPremium = false } = route.params;
+    const { level, category, userLang = 'tr', appLang = 'en', isPremium = false } = route.params;
 
     // Game State
     const [question, setQuestion] = useState(null);
@@ -32,6 +33,7 @@ export default function GameScreen({ route, navigation }) {
     const [totalCorrectNeeded, setTotalCorrectNeeded] = useState(0);
     const [showPremiumModal, setShowPremiumModal] = useState(false);
     const [levelComplete, setLevelComplete] = useState(false);
+    const [showWinModal, setShowWinModal] = useState(false);
 
     const [sessionScore, setSessionScore] = useState(0);
 
@@ -54,14 +56,16 @@ export default function GameScreen({ route, navigation }) {
             setSelectedWords([]);
             setSessionMistakes(0);
             setLevelComplete(false);
+            setShowWinModal(false);
 
             const { data: { user } } = await supabase.auth.getUser();
 
-            // 1. Fetch ALL Questions for Level
-            const { data: allQuestions, error: qError } = await supabase
-                .from('questions')
-                .select('*')
-                .eq('level', level);
+            // 1. Fetch ALL Questions for Level & Category
+            let query = supabase.from('questions').select('*').eq('level', level);
+            if (category) {
+                query = query.eq('category', category);
+            }
+            const { data: allQuestions, error: qError } = await query;
 
             if (qError || !allQuestions?.length) {
                 Alert.alert('Error', 'No questions found.');
@@ -176,8 +180,10 @@ export default function GameScreen({ route, navigation }) {
                 await supabase.rpc('update_streak', { p_user_id: user.id });
             }
 
+            // WIN CONDITION: Must find ALL correct answers
             if (currentCorrectCount >= totalCorrectNeeded) {
                 setIsCorrect(true);
+                setShowWinModal(true);
 
                 // --- UPSERT PROGRESS ---
                 if (user && question) {
@@ -272,7 +278,7 @@ export default function GameScreen({ route, navigation }) {
 
     console.log("RENDER QUESTION STATE:", JSON.stringify(question, null, 2));
 
-    const parts = question.sentence_en.split('[blank]');
+    const parts = question.sentence_en.split(/\[blank\]|\[_\]/);
 
     return (
         <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
@@ -287,7 +293,7 @@ export default function GameScreen({ route, navigation }) {
                     <Text style={styles.pointsText}>{sessionScore}</Text>
                 </View>
 
-                <View style={[styles.badge, styles[`badge_${level}`]]}>
+                <View style={[styles.badge, { backgroundColor: COLORS.levels[level] || COLORS.primary }]}>
                     <Text style={styles.badgeText}>{t('level')}: {t(level)}</Text>
                 </View>
             </View>
@@ -297,7 +303,7 @@ export default function GameScreen({ route, navigation }) {
                     {parts[0]}
                     <View style={[styles.blankBox, isCorrect && styles.blankBoxSuccess]}>
                         <Text style={styles.blankText}>
-                            {isCorrect ? '✨' : '___'}
+                            {isCorrect ? selectedWords.find(w => w.is_correct)?.word_text : '___'}
                         </Text>
                     </View>
                     {parts[1]}
@@ -349,8 +355,10 @@ export default function GameScreen({ route, navigation }) {
                             <Text style={[styles.foundChipText, !fw.is_correct && styles.foundChipTextError]}>
                                 <Text style={{ fontWeight: '900' }}>{fw.word_text}</Text>
 
-                                {showExplanation ? (
-                                    fw.translations?.[userLang] ? `: ${fw.translations[userLang]}` : ''
+                                {true ? (
+                                    (fw.translations?.[userLang] || fw.explanations?.[userLang] || fw[`exp_${userLang}`] || fw.exp_en || fw.explanations?.['en'] || (fw.explanations ? Object.values(fw.explanations)[0] : ''))
+                                        ? `: ${fw.translations?.[userLang] || fw.explanations?.[userLang] || fw[`exp_${userLang}`] || fw.exp_en || fw.explanations?.['en'] || (fw.explanations ? Object.values(fw.explanations)[0] : '')}`
+                                        : ''
                                 ) : (
                                     <>
                                         : {t('incorrect')}.{' '}
@@ -378,22 +386,117 @@ export default function GameScreen({ route, navigation }) {
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
                         <Text style={styles.modalEmoji}>👑</Text>
-                        <Text style={styles.modalTitle}>Go Premium!</Text>
+                        <Text style={styles.modalTitle}>{t('goPremium')}</Text>
                         <Text style={styles.modalDesc}>
-                            Unlock detailed explanations for every mistake and learn faster.
+                            {t('premiumDesc')}
                         </Text>
 
                         <TouchableOpacity style={styles.premiumBtn} onPress={() => Alert.alert('Coming Soon!', 'Payments integration pending.')}>
-                            <Text style={styles.premiumBtnText}>Unlock Premium - $4.99</Text>
+                            <Text style={styles.premiumBtnText}>{t('unlockPremium')}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity onPress={() => setShowPremiumModal(false)}>
-                            <Text style={styles.closeModalText}>Maybe later</Text>
+                            <Text style={styles.closeModalText}>{t('maybeLater')}</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
             </Modal>
-        </ScrollView>
+
+            {/* WIN MODAL */}
+            <Modal
+                animationType="fade"
+                transparent={true}
+                visible={showWinModal}
+                onRequestClose={() => setShowWinModal(false)}
+            >
+                <View style={[styles.modalOverlay, { justifyContent: 'center' }]}>
+                    <View style={[styles.modalContent, { marginHorizontal: 20, borderRadius: 25 }]}>
+                        <Text style={styles.modalEmoji}>🎉</Text>
+                        <Text style={styles.modalTitle}>{t('greatJob') || 'Great Job!'}</Text>
+                        <Text style={styles.modalDesc}>
+                            You found all the correct answers!
+                        </Text>
+
+                        {/* Option 1: Next Question */}
+                        <TouchableOpacity
+                            style={[styles.premiumBtn, { backgroundColor: COLORS.success }]}
+                            onPress={() => {
+                                setShowWinModal(false);
+                                nextQuestion();
+                            }}
+                        >
+                            <Text style={styles.premiumBtnText}>{t('nextQuestion') || 'Next Question'} →</Text>
+                        </TouchableOpacity>
+
+                        {/* Option 2: See words (Review) */}
+                        <TouchableOpacity
+                            style={[styles.premiumBtn, { backgroundColor: COLORS.secondary, marginTop: 10 }]}
+                            onPress={() => setShowWinModal(false)}
+                        >
+                            <Text style={styles.premiumBtnText}>See other words</Text>
+                        </TouchableOpacity>
+
+                        {/* Option 3: Back to Menu */}
+                        <TouchableOpacity onPress={() => navigation.goBack()}>
+                            <Text style={styles.closeModalText}>{t('backToMenu') || 'Back to Menu'}</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* LEVEL COMPLETE MODAL */}
+            <Modal
+                animationType="slide"
+                transparent={true}
+                visible={levelComplete}
+                onRequestClose={() => navigation.goBack()}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalEmoji}>🏅</Text>
+                        <Text style={styles.modalTitle}>{t('levelComplete')}</Text>
+                        <Text style={styles.modalDesc}>
+                            {t('levelCompleteDesc').replace('{level}', level)}
+                        </Text>
+
+                        {/* Option 1: Restart Progress */}
+                        <TouchableOpacity
+                            style={[styles.premiumBtn, { backgroundColor: COLORS.primary }]}
+                            onPress={async () => {
+                                try {
+                                    setLoading(true);
+                                    const { data: { user } } = await supabase.auth.getUser();
+                                    await resetLevelProgress(user.id, level);
+                                    setLevelComplete(false);
+                                    setGameMode('NEW');
+                                } catch (e) {
+                                    Alert.alert('Error', 'Failed to restart level');
+                                    setLoading(false);
+                                }
+                            }}
+                        >
+                            <Text style={styles.premiumBtnText}>{t('restartLevel')}</Text>
+                        </TouchableOpacity>
+
+                        {/* Option 2: Review Mistakes */}
+                        <TouchableOpacity
+                            style={[styles.premiumBtn, { backgroundColor: COLORS.secondary }]}
+                            onPress={() => {
+                                setLevelComplete(false);
+                                setGameMode('REVIEW');
+                            }}
+                        >
+                            <Text style={styles.premiumBtnText}>{t('reviewMistakes')}</Text>
+                        </TouchableOpacity>
+
+                        {/* Option 3: Go Home */}
+                        <TouchableOpacity onPress={() => navigation.navigate('Home')}>
+                            <Text style={styles.closeModalText}>{t('backHome')}</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+        </ScrollView >
     );
 
 }
