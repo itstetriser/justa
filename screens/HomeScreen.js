@@ -1,9 +1,9 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl, Modal, TextInput, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl, Modal, TextInput, Alert, Image, Animated, Easing } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchUserProfile, updateDailyGoal, fetchCategories, updateUserLevel, resetUserPoints, updateUserLanguage, fetchUserLevelProgress } from '../lib/api';
+import { fetchUserProfile, updateDailyGoal, fetchCategories, updateUserLevel, resetUserPoints, updateUserLanguage, fetchUserLevelProgress, fetchUserStats } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 import { getTranslation } from '../lib/translations';
 import WordOfTheDay from '../components/WordOfTheDay';
@@ -29,6 +29,10 @@ export default function HomeScreen({ navigation }) {
     const [showPracticeModal, setShowPracticeModal] = useState(false);
     const [loadingPractice, setLoadingPractice] = useState(false);
 
+    // Animations
+    const progressAnim = React.useRef(new Animated.Value(0)).current;
+    const scaleAnim = React.useRef(new Animated.Value(0)).current;
+
     const queryClient = useQueryClient();
 
     const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'TOEFL', 'IELTS'];
@@ -53,23 +57,68 @@ export default function HomeScreen({ navigation }) {
         enabled: !!userId,
     });
 
+    const { data: userStats, refetch: refetchStats } = useQuery({
+        queryKey: ['userStats', userId],
+        queryFn: () => fetchUserStats(userId),
+        enabled: !!userId
+    });
+
     // 3. Focus Effect
     useFocusEffect(
         useCallback(() => {
-            if (userId) refetch();
-        }, [userId, refetch])
+            if (userId) {
+                refetch();
+                refetchStats();
+            }
+        }, [userId, refetch, refetchStats])
     );
 
     // Derived State
     const currentLevel = (profile?.current_level || 'A1').toUpperCase();
     const currentLang = profile?.app_lang || 'en';
 
+    // Animation Logic
+    React.useEffect(() => {
+        const goal = profile?.daily_goal || 100;
+        const currentScore = profile?.score_daily || 0;
+        const percentage = Math.min((currentScore / goal), 1); // 0 to 1
+
+        // Animate Progress
+        Animated.timing(progressAnim, {
+            toValue: percentage,
+            duration: 1000,
+            useNativeDriver: false, // width layout property
+            easing: Easing.out(Easing.cubic)
+        }).start();
+
+        // Animate Success Text (Bounce)
+        if (currentScore >= goal) {
+            Animated.spring(scaleAnim, {
+                toValue: 1,
+                friction: 5,
+                useNativeDriver: false // Changed to false for compatibility
+            }).start();
+        } else {
+            scaleAnim.setValue(0);
+        }
+    }, [profile?.daily_goal, profile?.score_daily]);
+
+
     // Language Constants & State
     const [showLangModal, setShowLangModal] = useState(false);
+    // Using ISO codes for rendering flags via CDN
     const LANGUAGES = {
-        'en': '🇬🇧', 'tr': '🇹🇷', 'es': '🇪🇸', 'de': '🇩🇪',
-        'fr': '🇫🇷', 'it': '🇮🇹', 'jp': '🇯🇵', 'kr': '🇰🇷',
-        'cn': '🇨🇳', 'ru': '🇷🇺', 'pt': '🇵🇹'
+        'en': { iso: 'us', name: 'English', code: 'EN' },
+        'tr': { iso: 'tr', name: 'Türkçe', code: 'TR' },
+        'es': { iso: 'es', name: 'Español', code: 'ES' },
+        'de': { iso: 'de', name: 'Deutsch', code: 'DE' },
+        'fr': { iso: 'fr', name: 'Français', code: 'FR' },
+        'it': { iso: 'it', name: 'Italiano', code: 'IT' },
+        'jp': { iso: 'jp', name: '日本語', code: 'JP' },
+        'kr': { iso: 'kr', name: '한국어', code: 'KR' },
+        'cn': { iso: 'cn', name: '中文', code: 'CN' },
+        'ru': { iso: 'ru', name: 'Русский', code: 'RU' },
+        'pt': { iso: 'pt', name: 'Português', code: 'PT' }
     };
 
     // Logic: Language Change
@@ -256,12 +305,18 @@ export default function HomeScreen({ navigation }) {
                         </Text>
                     </TouchableOpacity>
 
-                    {/* Flag Circle */}
+                    {/* Flag Circle / Capsule */}
                     <TouchableOpacity
-                        style={[styles.headerCircle, { marginRight: 10 }]}
+                        style={[styles.headerCircle, { width: 'auto', paddingHorizontal: 12, marginRight: 10, flexDirection: 'row', gap: 8 }]}
                         onPress={() => setShowLangModal(true)}
                     >
-                        <Text style={{ fontSize: 20 }}>{LANGUAGES[currentLang] || '🌍'}</Text>
+                        <Image
+                            source={{ uri: `https://flagcdn.com/w80/${LANGUAGES[currentLang]?.iso}.png` }}
+                            style={{ width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: '#eee' }}
+                        />
+                        <Text style={{ fontSize: 16, fontWeight: 'bold' }}>
+                            {LANGUAGES[currentLang]?.code}
+                        </Text>
                     </TouchableOpacity>
 
                     {/* Settings Circle */}
@@ -308,15 +363,22 @@ export default function HomeScreen({ navigation }) {
                         </Text>
                     </View>
                     <View style={styles.progressBarBg}>
-                        <View
+                        <Animated.View
                             style={[
                                 styles.progressBarFill,
-                                { width: `${Math.min(((profile?.score_daily || 0) / dailyGoal) * 100, 100)}%` }
+                                {
+                                    width: progressAnim.interpolate({
+                                        inputRange: [0, 1],
+                                        outputRange: ['0%', '100%']
+                                    })
+                                }
                             ]}
                         />
                     </View>
                     {(profile?.score_daily || 0) >= dailyGoal && (
-                        <Text style={styles.goalSuccess}>{t('goalAchieved')}</Text>
+                        <Animated.Text style={[styles.goalSuccess, { transform: [{ scale: scaleAnim }] }]}>
+                            {t('goalAchieved')}
+                        </Animated.Text>
                     )}
                 </View>
 
@@ -337,6 +399,24 @@ export default function HomeScreen({ navigation }) {
                         <View>
                             <Text style={styles.statValue}>{profile?.streak_count || 0}</Text>
                             <Text style={styles.statLabel}>{t('streak')}</Text>
+                        </View>
+                    </View>
+                </View>
+
+                {/* Lifetime Stats */}
+                <View style={[styles.statsRow, { marginTop: -20 }]}>
+                    <View style={styles.statCard}>
+                        <Text style={styles.statEmoji}>📚</Text>
+                        <View>
+                            <Text style={styles.statValue}>{userStats?.questions_seen || 0}</Text>
+                            <Text style={styles.statLabel}>{t('questionsSeen') || 'Questions Seen'}</Text>
+                        </View>
+                    </View>
+                    <View style={styles.statCard}>
+                        <Text style={styles.statEmoji}>🔡</Text>
+                        <View>
+                            <Text style={styles.statValue}>{userStats?.words_seen || 0}</Text>
+                            <Text style={styles.statLabel}>{t('wordsSeen') || 'Words Seen'}</Text>
                         </View>
                     </View>
                 </View>
@@ -548,6 +628,49 @@ export default function HomeScreen({ navigation }) {
                 </View>
             </Modal>
 
+            {/* Practice Selection Modal */}
+            <Modal
+                visible={showPracticeModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowPracticeModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalTitle}>{t('startPractice') || 'Start Practice'}</Text>
+                        <Text style={styles.modalDesc}>{t('chooseMode') || 'Choose how you want to practice:'}</Text>
+
+                        {/* Option 1: New Questions */}
+                        <TouchableOpacity
+                            style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.success }]}
+                            onPress={() => handleLaunchGame('NEW')}
+                        >
+                            <Text style={styles.saveBtnText}>✨ {t('newQuestions') || 'New Questions'}</Text>
+                        </TouchableOpacity>
+
+                        {/* Option 2: Favorites */}
+                        <TouchableOpacity
+                            style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.secondary }]}
+                            onPress={() => handleLaunchGame('FAVORITES')}
+                        >
+                            <Text style={styles.saveBtnText}>❤️ {t('favoriteQuestions') || 'Favorite Questions'}</Text>
+                        </TouchableOpacity>
+
+                        {/* Option 3: Retry Mistakes */}
+                        <TouchableOpacity
+                            style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.error }]}
+                            onPress={() => handleLaunchGame('REVIEW')}
+                        >
+                            <Text style={styles.saveBtnText}>💪 {t('retryMistakes') || 'Retry Mistakes'}</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity onPress={() => setShowPracticeModal(false)} style={{ marginTop: 15 }}>
+                            <Text style={styles.closeModalText}>{t('cancel')}</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
             {/* Language Selection Modal */}
             <Modal
                 visible={showLangModal}
@@ -562,29 +685,21 @@ export default function HomeScreen({ navigation }) {
 
                         <View style={{ width: '100%', maxHeight: 400 }}>
                             <ScrollView>
-                                {Object.entries(LANGUAGES).map(([code, flag]) => (
+                                {Object.entries(LANGUAGES).map(([code, lang]) => (
                                     <TouchableOpacity
                                         key={code}
                                         style={[styles.langChip, currentLang === code && { backgroundColor: COLORS.background }]}
                                         onPress={() => handleLangSelect(code)}
                                     >
-                                        <Text style={styles.langFlag}>{flag}</Text>
+                                        <Image
+                                            source={{ uri: `https://flagcdn.com/w80/${lang.iso}.png` }}
+                                            style={{ width: 32, height: 32, borderRadius: 16, marginRight: 12, borderWidth: 1, borderColor: '#eee' }}
+                                        />
+                                        <Text style={{ width: 40, fontWeight: 'bold', color: COLORS.textSecondary }}>
+                                            {lang.code}
+                                        </Text>
                                         <Text style={styles.langText}>
-                                            {
-                                                {
-                                                    'en': 'English',
-                                                    'tr': 'Türkçe',
-                                                    'es': 'Español',
-                                                    'de': 'Deutsch',
-                                                    'fr': 'Français',
-                                                    'it': 'Italiano',
-                                                    'jp': '日本語',
-                                                    'kr': '한국어',
-                                                    'cn': '中文',
-                                                    'ru': 'Русский',
-                                                    'pt': 'Português'
-                                                }[code] || code.toUpperCase()
-                                            }
+                                            {lang.name}
                                         </Text>
                                         {currentLang === code && <Text style={{ marginLeft: 'auto', color: COLORS.primary }}>✓</Text>}
                                     </TouchableOpacity>

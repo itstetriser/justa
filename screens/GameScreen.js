@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Vibration, LayoutAnimation, Platform, UIManager, Alert, ScrollView, Modal } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Vibration, LayoutAnimation, Platform, UIManager, Alert, ScrollView, Modal, Animated, Easing, Image } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
@@ -13,6 +13,8 @@ if (
 ) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+
+const squirrelImg = require('../assets/squirrel.png');
 
 export default function GameScreen({ route, navigation }) {
     const { level, category, userLang = 'tr', appLang = 'en', isPremium = false } = route.params;
@@ -34,6 +36,28 @@ export default function GameScreen({ route, navigation }) {
     const [showPremiumModal, setShowPremiumModal] = useState(false);
     const [levelComplete, setLevelComplete] = useState(false);
     const [showWinModal, setShowWinModal] = useState(false);
+
+    // Squirrel Animation
+    const squirrelAnim = React.useRef(new Animated.Value(0)).current;
+
+    const handleSquirrelPress = () => {
+        // Waving animation (rotation)
+        Animated.sequence([
+            Animated.timing(squirrelAnim, { toValue: 1, duration: 100, useNativeDriver: false }),
+            Animated.timing(squirrelAnim, { toValue: -1, duration: 200, useNativeDriver: false }),
+            Animated.timing(squirrelAnim, { toValue: 1, duration: 200, useNativeDriver: false }),
+            Animated.timing(squirrelAnim, { toValue: -1, duration: 200, useNativeDriver: false }),
+            Animated.timing(squirrelAnim, { toValue: 0, duration: 100, useNativeDriver: false })
+        ]).start();
+    };
+
+    const squirrelRotate = squirrelAnim.interpolate({
+        inputRange: [-1, 0, 1],
+        outputRange: ['-15deg', '0deg', '15deg']
+    });
+
+    // Favorite State
+    const [isSaved, setIsSaved] = useState(false);
 
     const [sessionScore, setSessionScore] = useState(0);
 
@@ -98,7 +122,7 @@ export default function GameScreen({ route, navigation }) {
                 // Is Favorite
                 pool = allQuestions.filter(q => favSet.has(q.id));
             } else {
-                // PRACTICE: Everything
+                // PRACTICE: Everything (Fallback)
                 pool = allQuestions;
             }
 
@@ -145,6 +169,10 @@ export default function GameScreen({ route, navigation }) {
             setQuestion({ ...q, words: parsedWords, isFavorite: favSet.has(q.id) });
             setTotalCorrectNeeded(needed);
             setCorrectCount(0);
+
+            // Fetch Saved Status
+            const isFav = await checkSavedStatus(user.id, q.id);
+            setIsSaved(isFav);
 
         } catch (error) {
             console.error('Error fetching question:', error);
@@ -241,6 +269,26 @@ export default function GameScreen({ route, navigation }) {
                 explanation = wordObj.translations[userLang] || Object.values(wordObj.translations)[0];
             }
             console.log("Incorrect:", explanation);
+        }
+    };
+
+    const handleToggleFavorite = async () => {
+        if (!question) return;
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                const newState = await toggleSavedQuestion(user.id, question.id);
+                setIsSaved(newState);
+
+                // Optional: Haptic feedback
+                if (newState) {
+                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                } else {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }
+            }
+        } catch (e) {
+            console.error("Fav Error:", e);
         }
     };
 
@@ -451,6 +499,19 @@ export default function GameScreen({ route, navigation }) {
             >
                 <View style={[styles.modalOverlay, { justifyContent: 'center' }]}>
                     <View style={[styles.modalContent, { marginHorizontal: 20, borderRadius: 25 }]}>
+                        {/* Animated Squirrel */}
+                        <TouchableOpacity onPress={handleSquirrelPress} activeOpacity={0.8} style={{ marginBottom: 10, alignSelf: 'center' }}>
+                            <Animated.Image
+                                source={squirrelImg}
+                                style={{
+                                    width: 100,
+                                    height: 100,
+                                    resizeMode: 'contain',
+                                    transform: [{ rotate: squirrelRotate }]
+                                }}
+                            />
+                        </TouchableOpacity>
+
                         <Text style={styles.modalEmoji}>🎉</Text>
                         <Text style={styles.modalTitle}>{t('greatJob') || 'Great Job!'}</Text>
                         <Text style={styles.modalDesc}>
@@ -468,7 +529,17 @@ export default function GameScreen({ route, navigation }) {
                             <Text style={styles.premiumBtnText}>{t('nextQuestion') || 'Next Question'} →</Text>
                         </TouchableOpacity>
 
-                        {/* Option 2: Add to Favorites */}
+                        {/* Option 2: Favorite Button (Restored from Stash) */}
+                        <TouchableOpacity
+                            style={[styles.premiumBtn, { backgroundColor: question?.isFavorite ? '#ffcccc' : '#f0f0f0', borderWidth: 1, borderColor: question?.isFavorite ? COLORS.error : '#eee' }]}
+                            onPress={handleHeartPress}
+                        >
+                            <Text style={[styles.premiumBtnText, { color: question?.isFavorite ? COLORS.error : COLORS.textPrimary }]}>
+                                {question?.isFavorite ? "❤️ Remove from Favorites" : "🤍 Add to Favorites"}
+                            </Text>
+                        </TouchableOpacity>
+
+                        {/* Option 3: See words (Review) */}
                         <TouchableOpacity
                             style={[styles.premiumBtn, { backgroundColor: question?.isFavorite ? '#ddd' : COLORS.secondary, marginTop: 10 }]}
                             onPress={() => {

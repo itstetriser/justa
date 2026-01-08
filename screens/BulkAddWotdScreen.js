@@ -21,14 +21,14 @@ export default function BulkAddWotdScreen({ navigation }) {
         let textToProcess = inputText.trim();
 
         // 2. Split logic
-        // If the user pastes a long single line, we need to split by the DATE pattern (YYYY-MM-DD)
-        // Regex lookahead: split before YYYY-MM-DD
+        // Support custom delimiter '---' requested by user
         let lines = [];
-        if (textToProcess.includes('\n')) {
+        if (textToProcess.includes('---')) {
+            lines = textToProcess.split('---');
+        } else if (textToProcess.includes('\n')) {
             lines = textToProcess.split('\n');
         } else {
             // Split by Lookahead for date pattern: ?=202[0-9]-[0-1][0-9]-[0-3][0-9]
-            // This splits BEFORE the date, keeping the date in the next chunk
             lines = textToProcess.split(/(?=202\d-\d{2}-\d{2})/);
         }
 

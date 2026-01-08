@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS public.daily_words (
     date DATE NOT NULL DEFAULT CURRENT_DATE,
     level TEXT NOT NULL, -- 'A1', 'A2', 'B1', etc.
     word TEXT NOT NULL,
+    part_of_speech TEXT,
     definition_en TEXT,
     definition_tr TEXT,
     definition_es TEXT,

@@ -49,12 +49,29 @@ export default function WordOfTheDay({ userId, level, dailyScore, appLang, onBon
     const startGame = () => {
         if (!wordData) return;
 
-        // Scramble the word
-        const letters = wordData.word.toUpperCase().split('');
-        const scrambled = [...letters].sort(() => Math.random() - 0.5);
+        const targetWord = wordData.word.toUpperCase();
+        const letters = targetWord.split('');
+        // Create objects first to ensure IDs are tracked
+        let scrambledObjs = letters.map((l, i) => ({ id: i, char: l, used: false }));
 
-        setScrambledLetters(scrambled.map((l, i) => ({ id: i, char: l, used: false })));
-        setUserGuess([]);
+        // Shuffle manually (simple fisher-yates for objects)
+        for (let i = scrambledObjs.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [scrambledObjs[i], scrambledObjs[j]] = [scrambledObjs[j], scrambledObjs[i]];
+        }
+
+        // HINT LOGIC: Find the first letter of the word in the scrambled set
+        const firstChar = targetWord[0];
+        const hintLetter = scrambledObjs.find(l => l.char === firstChar);
+
+        let initialGuess = [];
+        if (hintLetter) {
+            hintLetter.used = true;
+            initialGuess.push({ ...hintLetter, status: 'correct' });
+        }
+
+        setScrambledLetters(scrambledObjs);
+        setUserGuess(initialGuess);
         setGameStatus('PLAYING');
         setShowGameModal(true);
     };
@@ -62,43 +79,61 @@ export default function WordOfTheDay({ userId, level, dailyScore, appLang, onBon
     const handleLetterPress = (letterObj) => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+        const targetWord = wordData.word.toUpperCase();
+        const currentIndex = userGuess.length;
+
+        // Check Correctness
+        const isCorrect = letterObj.char === targetWord[currentIndex];
+        const status = isCorrect ? 'correct' : 'wrong';
+
         // Add to guess
-        const newGuess = [...userGuess, letterObj];
+        const newGuess = [...userGuess, { ...letterObj, status }];
         setUserGuess(newGuess);
 
         // Mark as used
         setScrambledLetters(prev => prev.map(l => l.id === letterObj.id ? { ...l, used: true } : l));
 
         // Check if word is complete
-        if (newGuess.length === wordData.word.length) {
+        if (newGuess.length === targetWord.length) {
             const guessedWord = newGuess.map(l => l.char).join('');
-            if (guessedWord === wordData.word.toUpperCase()) {
+            if (guessedWord === targetWord) {
                 handleWin();
             } else {
                 // Wrong guess logic - auto reset after delay
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-                setTimeout(() => resetGame(false), 500);
+                // Keep the hint when resetting? Or full reset? 
+                // User requirement: "turn letter green otherwise red" implies we see the red.
+                // If the word is full but wrong, we probably want to reset the WRONG letters?
+                // For now, adhering to previous behavior (reset) but maybe we should keep the correct ones?
+                // Let's reset but keep the HINT.
+                setTimeout(() => resetGame(false), 800);
             }
         }
     };
 
-    const handleUndo = () => {
-        if (userGuess.length === 0) return;
-        const lastLetter = userGuess[userGuess.length - 1];
+    // ... (handleUndo remains mostly same, maybe ensure we don't undo the hint?)
 
+    const handleUndo = () => {
+        // Prevent undoing the first letter (Hint)
+        if (userGuess.length <= 1) return;
+
+        const lastLetter = userGuess[userGuess.length - 1];
         setUserGuess(prev => prev.slice(0, -1));
         setScrambledLetters(prev => prev.map(l => l.id === lastLetter.id ? { ...l, used: false } : l));
     };
 
     const resetGame = (fullReset = true) => {
         if (fullReset) {
-            const letters = wordData.word.toUpperCase().split('');
-            const scrambled = [...letters].sort(() => Math.random() - 0.5);
-            setScrambledLetters(scrambled.map((l, i) => ({ id: i, char: l, used: false })));
+            startGame(); // Just restart properly
         } else {
-            setScrambledLetters(prev => prev.map(l => ({ ...l, used: false })));
+            // Partial reset (retry)
+            // Keep the hint (index 0)
+            const hint = userGuess[0];
+
+            // Unmark used for everything EXCEPT the hint
+            setScrambledLetters(prev => prev.map(l => l.id === hint.id ? l : { ...l, used: false }));
+            setUserGuess([hint]);
         }
-        setUserGuess([]);
     };
 
     const handleWin = async () => {
@@ -110,12 +145,23 @@ export default function WordOfTheDay({ userId, level, dailyScore, appLang, onBon
             setIsClaimed(true);
             if (onBonusClaimed) onBonusClaimed();
         } catch (e) {
-            Alert.alert("Error", "Could not claim bonus points");
+            // Already claimed or network error, just show success
+            console.log("Bonus claim note:", e);
         }
     };
 
     if (loading) return <ActivityIndicator style={{ margin: 20 }} />;
-    if (!wordData) return null; // Or show empty state
+    // if (!wordData) return null; // Old behavior: disappeared.
+    if (!wordData) {
+        return (
+            <View style={styles.card}>
+                <Text style={styles.title}>📅 {t('wordOfTheDay') || 'Word of the Day'}</Text>
+                <Text style={{ textAlign: 'center', color: '#999', marginVertical: 20 }}>
+                    {t('noWordToday') || 'No word available for today.'}
+                </Text>
+            </View>
+        );
+    }
 
     // 1. CLAIMED STATE
     if (isClaimed) {
@@ -197,13 +243,31 @@ export default function WordOfTheDay({ userId, level, dailyScore, appLang, onBon
 
                         {/* Slots */}
                         <View style={styles.slotsContainer}>
-                            {Array.from({ length: wordData.word.length }).map((_, i) => (
-                                <View key={i} style={[styles.slot, gameStatus === 'SUCCESS' && styles.slotSuccess]}>
-                                    <Text style={styles.slotText}>
-                                        {userGuess[i]?.char || ''}
-                                    </Text>
-                                </View>
-                            ))}
+                            {Array.from({ length: wordData.word.length }).map((_, i) => {
+                                const guess = userGuess[i];
+                                let slotStyle = styles.slot;
+                                let textStyle = styles.slotText;
+
+                                if (gameStatus === 'SUCCESS') {
+                                    slotStyle = [styles.slot, styles.slotSuccess];
+                                } else if (guess) {
+                                    if (guess.status === 'correct') {
+                                        slotStyle = [styles.slot, { borderBottomColor: COLORS.success, backgroundColor: '#E5F9E7' }];
+                                        textStyle = [styles.slotText, { color: COLORS.success }];
+                                    } else {
+                                        slotStyle = [styles.slot, { borderBottomColor: COLORS.error, backgroundColor: '#FFE5E5' }];
+                                        textStyle = [styles.slotText, { color: COLORS.error }];
+                                    }
+                                }
+
+                                return (
+                                    <View key={i} style={slotStyle}>
+                                        <Text style={textStyle}>
+                                            {guess?.char || ''}
+                                        </Text>
+                                    </View>
+                                );
+                            })}
                         </View>
 
                         {/* Scrambled Letters Controls */}
