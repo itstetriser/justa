@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchUserProfile, updateDailyGoal, fetchCategories, updateUserLevel, resetUserPoints, updateUserLanguage } from '../lib/api';
+import { fetchUserProfile, updateDailyGoal, fetchCategories, updateUserLevel, resetUserPoints, updateUserLanguage, fetchUserLevelProgress } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 import { getTranslation } from '../lib/translations';
 import WordOfTheDay from '../components/WordOfTheDay';
@@ -24,6 +24,10 @@ export default function HomeScreen({ navigation }) {
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [pendingLevel, setPendingLevel] = useState(null);
     const [confirmType, setConfirmType] = useState(null); // 'UP' or 'DOWN'
+
+    // Practice Modal
+    const [showPracticeModal, setShowPracticeModal] = useState(false);
+    const [loadingPractice, setLoadingPractice] = useState(false);
 
     const queryClient = useQueryClient();
 
@@ -86,12 +90,47 @@ export default function HomeScreen({ navigation }) {
     };
 
     const handleStartPractice = () => {
+        // Open the options modal
+        setShowPracticeModal(true);
+    };
+
+    const handleLaunchGame = async (mode) => {
+        // Pre-flight Check: Don't navigate if there's nothing to play
+        if (mode === 'REVIEW' || mode === 'FAVORITES') {
+            try {
+                // We need to check if they actually have data
+                // Show simple loading maybe? Or just await (it's fast)
+                const progress = await fetchUserLevelProgress(userId, currentLevel);
+
+                if (mode === 'REVIEW') {
+                    // Check mistakes
+                    const mistakeCount = Object.values(progress.mistakes || {}).reduce((a, b) => a + b, 0);
+                    if (mistakeCount === 0) {
+                        Alert.alert(t('oops'), t('noMistakes') || "No mistakes to review!");
+                        return; // Stay here
+                    }
+                } else if (mode === 'FAVORITES') {
+                    // Check favorites
+                    if (!progress.favorite_ids || progress.favorite_ids.length === 0) {
+                        Alert.alert(t('oops'), t('noFavoritesDesc') || "No favorites found.");
+                        return; // Stay here
+                    }
+                }
+            } catch (e) {
+                console.error("Pre-check failed:", e);
+                // Allow navigation on error so GameScreen can handle/retry? 
+                // Or just show alert.
+            }
+        }
+
+        setShowPracticeModal(false);
         navigation.navigate('Game', {
             level: currentLevel,
-            category: null, // No category filter
+            category: null,
             appLang: profile?.app_lang,
             userLang: profile?.native_lang,
-            isPremium: profile?.is_premium
+            isPremium: profile?.is_premium,
+            gameMode: mode
         });
     };
 
@@ -321,6 +360,56 @@ export default function HomeScreen({ navigation }) {
 
 
             </ScrollView>
+
+            {/* Practice Options Modal */}
+            <Modal
+                visible={showPracticeModal}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setShowPracticeModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        {loadingPractice ? (
+                            <ActivityIndicator size="large" color={COLORS.primary} style={{ padding: 20 }} />
+                        ) : (
+                            <>
+                                <Text style={styles.modalEmoji}>🎮</Text>
+                                <Text style={styles.modalTitle}>{t('startPractice')}</Text>
+                                <Text style={styles.modalDesc}>Choose what to practice:</Text>
+
+                                {/* Option 1: New Questions */}
+                                <TouchableOpacity
+                                    style={[styles.premiumBtn, { backgroundColor: COLORS.primary }]}
+                                    onPress={() => handleLaunchGame('NEW')}
+                                >
+                                    <Text style={styles.premiumBtnText}>🆕 {t('newQuestions') || 'New Questions'}</Text>
+                                </TouchableOpacity>
+
+                                {/* Option 2: Mistakes */}
+                                <TouchableOpacity
+                                    style={[styles.premiumBtn, { backgroundColor: COLORS.error, marginTop: 10 }]}
+                                    onPress={() => handleLaunchGame('REVIEW')}
+                                >
+                                    <Text style={styles.premiumBtnText}>🧠 {t('reviewMistakes') || 'Review Mistakes'}</Text>
+                                </TouchableOpacity>
+
+                                {/* Option 3: Favorites */}
+                                <TouchableOpacity
+                                    style={[styles.premiumBtn, { backgroundColor: COLORS.secondary, marginTop: 10 }]}
+                                    onPress={() => handleLaunchGame('FAVORITES')}
+                                >
+                                    <Text style={styles.premiumBtnText}>❤️ {t('favorites') || 'Favorites'}</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity onPress={() => setShowPracticeModal(false)} style={{ marginTop: 20 }}>
+                                    <Text style={styles.closeModalText}>{t('cancel')}</Text>
+                                </TouchableOpacity>
+                            </>
+                        )}
+                    </View>
+                </View>
+            </Modal>
 
             {/* Category Selection Modal */}
             <Modal
@@ -733,6 +822,24 @@ const styles = StyleSheet.create({
         color: COLORS.textSecondary,
         textAlign: 'center',
         marginBottom: 20,
+    },
+
+    modalEmoji: {
+        fontSize: 40,
+        marginBottom: 10,
+    },
+    premiumBtn: {
+        backgroundColor: COLORS.primary,
+        width: '100%',
+        paddingVertical: 15,
+        borderRadius: 15,
+        alignItems: 'center',
+        ...SHADOWS.small,
+    },
+    premiumBtnText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
     },
     input: {
         width: '100%',

@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { getTranslation } from '../lib/translations';
-import { fetchUserProgress, saveProgress, updateUserPointTransaction, updateUserStreak, resetLevelProgress } from '../lib/api';
+import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 
 if (
@@ -20,7 +20,7 @@ export default function GameScreen({ route, navigation }) {
     // Game State
     const [question, setQuestion] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [gameMode, setGameMode] = useState('NEW'); // NEW | REVIEW | PRACTICE
+    const [gameMode, setGameMode] = useState(route.params?.gameMode || 'NEW'); // NEW | REVIEW | PRACTICE | FAVORITES
 
     // Play Statistics
     const [sessionMistakes, setSessionMistakes] = useState(0);
@@ -60,7 +60,7 @@ export default function GameScreen({ route, navigation }) {
 
             const { data: { user } } = await supabase.auth.getUser();
 
-            // 1. Fetch ALL Questions for Level & Category
+            // 1. Fetch ALL Questions for Level
             let query = supabase.from('questions').select('*').eq('level', level);
             if (category) {
                 query = query.eq('category', category);
@@ -73,57 +73,61 @@ export default function GameScreen({ route, navigation }) {
                 return;
             }
 
-            // 2. Fetch User Progress
-            const { data: progress, error: pError } = await supabase
-                .from('user_progress')
-                .select('question_id, mistake_count')
-                .eq('user_id', user.id)
-                .eq('level', level);
+            // 2. Fetch Hybrid Progress (1 Row)
+            const progress = await fetchUserLevelProgress(user.id, level);
 
-            // 3. Determine Pool based on Game Mode
-            let pool = [];
+            // Sets for O(1) lookup
+            const seenSet = new Set(progress.seen_ids || []);
+            const mistakeMap = progress.mistakes || {}; // {id: count}
+            const favSet = new Set(progress.favorite_ids || []);
 
-            // Map progress for O(1) lookups
-            const progressMap = new Map();
-            progress?.forEach(p => progressMap.set(p.question_id, p));
-
-            // Calc Stats for UI
-            const pendingReviews = progress?.filter(p => p.mistake_count > 0).length || 0;
+            // Calc Stats
+            const pendingReviews = allQuestions.filter(q => (mistakeMap[q.id] || 0) > 0).length;
             setReviewCount(pendingReviews);
 
+            // 3. Filter Pool
+            let pool = [];
+
             if (gameMode === 'NEW') {
-                // Only questions NOT in progress
-                pool = allQuestions.filter(q => !progressMap.has(q.id));
+                // Not seen yet
+                pool = allQuestions.filter(q => !seenSet.has(q.id));
             } else if (gameMode === 'REVIEW') {
-                // Only questions WITH mistakes
-                pool = allQuestions.filter(q => {
-                    const p = progressMap.get(q.id);
-                    return p && p.mistake_count > 0;
-                });
+                // Has mistakes
+                pool = allQuestions.filter(q => (mistakeMap[q.id] || 0) > 0);
+            } else if (gameMode === 'FAVORITES') {
+                // Is Favorite
+                pool = allQuestions.filter(q => favSet.has(q.id));
             } else {
                 // PRACTICE: Everything
                 pool = allQuestions;
             }
 
-            // 4. Handle Empty Pool (Level Complete)
+            // 4. Handle Empty Pool
             if (pool.length === 0) {
                 if (gameMode === 'NEW') {
-                    // Finished all new content -> Show Level Complete
                     setLevelComplete(true);
                 } else if (gameMode === 'REVIEW') {
-                    // Cleared all reviews -> Go back to Menu or Suggest Practice
-                    Alert.alert(t('greatJob'), "You've fixed all your mistakes!");
-                    setGameMode('NEW'); // Will trigger re-fetch and show complete screen if mostly done
+                    Alert.alert(
+                        t('greatJob') || 'Great Job',
+                        t('noMistakes') || "You have no mistakes to review!",
+                        [{ text: 'OK', onPress: () => navigation.goBack() }]
+                    );
+                } else if (gameMode === 'FAVORITES') {
+                    Alert.alert(
+                        t('noFavorites') || 'No Favorites',
+                        t('noFavoritesDesc') || 'You have no favorite questions in this level.',
+                        [{ text: 'OK', onPress: () => navigation.goBack() }]
+                    );
                 }
                 setLoading(false);
                 return;
             }
 
-            // 5. Select Random Question
+            // 5. Select Random
             const randomIndex = Math.floor(Math.random() * pool.length);
             const q = pool[randomIndex];
 
-            // Parse & Prepare Words (Standard Logic)
+            // Parse Words
             let parsedWords = [];
             const rawWords = q.words || q.word_pool;
             if (rawWords) {
@@ -138,7 +142,7 @@ export default function GameScreen({ route, navigation }) {
             const needed = parsedWords.filter(w => w.is_correct).length;
             parsedWords.sort(() => Math.random() - 0.5);
 
-            setQuestion({ ...q, words: parsedWords });
+            setQuestion({ ...q, words: parsedWords, isFavorite: favSet.has(q.id) });
             setTotalCorrectNeeded(needed);
             setCorrectCount(0);
 
@@ -147,6 +151,27 @@ export default function GameScreen({ route, navigation }) {
             Alert.alert('Error', 'Failed to load question');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleHeartPress = async () => {
+        if (!question) return;
+        const previousVal = question.isFavorite;
+        const newVal = !previousVal;
+
+        // Optimistic Update
+        setQuestion(prev => ({ ...prev, isFavorite: newVal }));
+        Haptics.selectionAsync();
+
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            console.log(`Toggling favorite: User=${user.id}, Level=${level}, Q=${question.id}`);
+            await toggleQuestionFavorite(user.id, level, question.id);
+        } catch (error) {
+            console.error("Favorite Toggle Failed:", error);
+            // Rollback
+            setQuestion(prev => ({ ...prev, isFavorite: previousVal }));
+            Alert.alert("Error", "Could not save favorite.");
         }
     };
 
@@ -175,9 +200,8 @@ export default function GameScreen({ route, navigation }) {
             setSessionScore(prev => prev + 10); // Local Session Update
             if (user) {
                 // Background DB Sync
-                await supabase.rpc('update_points', { user_id: user.id, delta: 10 });
-                // Update Streak (RPC handles daily logic)
-                await supabase.rpc('update_streak', { p_user_id: user.id });
+                await updateUserPointTransaction(user.id, 10);
+                await updateUserStreak(user.id);
             }
 
             // WIN CONDITION: Must find ALL correct answers
@@ -185,15 +209,15 @@ export default function GameScreen({ route, navigation }) {
                 setIsCorrect(true);
                 setShowWinModal(true);
 
-                // --- UPSERT PROGRESS ---
+                // --- MARK SEEN ---
                 if (user && question) {
-                    await supabase.from('user_progress').upsert({
-                        user_id: user.id,
-                        question_id: question.id,
-                        level: level,
-                        mistake_count: sessionMistakes,
-                        completed_at: new Date()
-                    }, { onConflict: 'user_id, question_id' });
+                    await markQuestionSeen(user.id, level, question.id);
+
+                    // --- RESOLVE MISTAKE ---
+                    // If no mistakes were made in THIS session, remove it from the mistake list (if it was there).
+                    if (sessionMistakes === 0) {
+                        await resolveQuestionMistake(user.id, level, question.id);
+                    }
                 }
             }
         } else {
@@ -202,12 +226,11 @@ export default function GameScreen({ route, navigation }) {
             setSessionMistakes(prev => prev + 1);
 
             // -3 Points (ONLY if IsCorrect is NOT true yet)
-            // User said: "If he found all correct answers, then even if he clicks an incorrect answer, he doesnt lose any points."
-            // But wait, if he found all correct answers, the game "ends" usually?
-            // Ah, he can still click remaining incorrect words to see explanations.
             if (!isCorrect && user) {
                 setSessionScore(prev => prev - 3);
-                await supabase.rpc('update_points', { user_id: user.id, delta: -3 });
+                await updateUserPointTransaction(user.id, -3);
+                // --- RECORD MISTAKE ---
+                await recordQuestionMistake(user.id, level, question.id);
             }
 
             // Robust Explanation Lookup (for logging/debugging if needed)
@@ -274,7 +297,19 @@ export default function GameScreen({ route, navigation }) {
         );
     }
 
-    if (!question) return null;
+    if (!question) {
+        return (
+            <View style={[styles.container, styles.center]}>
+                <Text style={{ fontSize: 40, marginBottom: 20 }}>❓</Text>
+                <Text style={{ color: COLORS.textSecondary, marginBottom: 20 }}>
+                    {loading ? 'Loading...' : 'No question loaded.'}
+                </Text>
+                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.premiumBtn}>
+                    <Text style={styles.premiumBtnText}>{t('backToMenu') || 'Back'}</Text>
+                </TouchableOpacity>
+            </View>
+        );
+    }
 
     console.log("RENDER QUESTION STATE:", JSON.stringify(question, null, 2));
 
@@ -296,6 +331,11 @@ export default function GameScreen({ route, navigation }) {
                 <View style={[styles.badge, { backgroundColor: COLORS.levels[level] || COLORS.primary }]}>
                     <Text style={styles.badgeText}>{t('level')}: {t(level)}</Text>
                 </View>
+
+                {/* HEART BTN */}
+                <TouchableOpacity onPress={handleHeartPress} style={styles.heartBtn}>
+                    <Text style={{ fontSize: 24 }}>{question.isFavorite ? '❤️' : '🤍'}</Text>
+                </TouchableOpacity>
             </View>
 
             <View style={styles.card}>
@@ -428,12 +468,27 @@ export default function GameScreen({ route, navigation }) {
                             <Text style={styles.premiumBtnText}>{t('nextQuestion') || 'Next Question'} →</Text>
                         </TouchableOpacity>
 
-                        {/* Option 2: See words (Review) */}
+                        {/* Option 2: Add to Favorites */}
                         <TouchableOpacity
-                            style={[styles.premiumBtn, { backgroundColor: COLORS.secondary, marginTop: 10 }]}
+                            style={[styles.premiumBtn, { backgroundColor: question?.isFavorite ? '#ddd' : COLORS.secondary, marginTop: 10 }]}
+                            onPress={() => {
+                                handleHeartPress();
+                                // Optionally close modal, but maybe they want to heart it and then go next?
+                                // Let's keep modal open so they can see the heart toggle, or give feedback.
+                                // Actually, handleHeartPress updates 'question' state, so this re-renders. 
+                            }}
+                        >
+                            <Text style={[styles.premiumBtnText, { color: question?.isFavorite ? '#666' : '#fff' }]}>
+                                {question?.isFavorite ? '💔 Remove from Favorites' : '❤️ Add to Favorites'}
+                            </Text>
+                        </TouchableOpacity>
+
+                        {/* Option 3: See words (Review) */}
+                        <TouchableOpacity
+                            style={[styles.premiumBtn, { backgroundColor: COLORS.surface, marginTop: 10, borderWidth: 1, borderColor: '#ddd', elevation: 0 }]}
                             onPress={() => setShowWinModal(false)}
                         >
-                            <Text style={styles.premiumBtnText}>See other words</Text>
+                            <Text style={[styles.premiumBtnText, { color: COLORS.textPrimary }]}>See other words</Text>
                         </TouchableOpacity>
 
                         {/* Option 3: Back to Menu */}
@@ -528,6 +583,10 @@ const styles = StyleSheet.create({
         color: COLORS.textSecondary,
         fontSize: 16,
         fontWeight: '600',
+    },
+    heartBtn: {
+        marginLeft: 10,
+        padding: 5,
     },
     badge: {
         paddingVertical: 5,
