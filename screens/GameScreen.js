@@ -17,16 +17,11 @@ if (
 const squirrelImg = require('../assets/squirrel.png');
 
 export default function GameScreen({ route, navigation }) {
-    const { level, category, userLang = 'tr', appLang = 'en', isPremium = false } = route.params;
-
-    // Game State
-    const [question, setQuestion] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [gameMode, setGameMode] = useState(route.params?.gameMode || 'NEW'); // NEW | REVIEW | PRACTICE | FAVORITES
-
     // Play Statistics
     const [sessionMistakes, setSessionMistakes] = useState(0);
     const [reviewCount, setReviewCount] = useState(0); // How many errors pending?
+
+    // Current Question State
 
     // Current Question State
     const [selectedWords, setSelectedWords] = useState([]);
@@ -67,10 +62,9 @@ export default function GameScreen({ route, navigation }) {
     useFocusEffect(
         useCallback(() => {
             fetchQuestion();
-            setSessionScore(0); // Reset score on new session/focus? Or just once?
-            // If "each run is different", resetting on mount is fine.
+            setSessionScore(0);
             return () => { };
-        }, [gameMode]) // Re-fetch on mode switch
+        }, [gameMode])
     );
 
     const fetchQuestion = async () => {
@@ -857,6 +851,25 @@ const styles = StyleSheet.create({
     modalEmoji: {
         fontSize: 50,
         marginBottom: 15,
+    },
+    scoreBoard: {
+        alignItems: 'center',
+    },
+    scoreRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        width: '100%',
+        alignItems: 'center'
+    },
+    scoreLabel: {
+        fontSize: 18,
+        color: COLORS.textSecondary,
+        fontWeight: 'bold'
+    },
+    scoreValue: {
+        fontSize: 22,
+        fontWeight: 'bold',
+        color: COLORS.textPrimary
     },
     modalTitle: {
         fontSize: 24,

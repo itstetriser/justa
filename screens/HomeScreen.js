@@ -430,6 +430,8 @@ export default function HomeScreen({ navigation }) {
                     onBonusClaimed={handleBonusClaimed}
                 />
 
+
+                {/* PRACTICE SECTION */}
                 <Text style={styles.sectionHeader}>{t('practice')}</Text>
 
                 {/* Start Practice Button */}

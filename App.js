@@ -23,6 +23,17 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const queryClient = new QueryClient();
 const Stack = createNativeStackNavigator();
 
+// Deep Linking Config
+const linking = {
+  prefixes: ['justablank://'],
+  config: {
+    screens: {
+      Home: 'home',
+    },
+  },
+};
+
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -52,7 +63,7 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <NavigationContainer>
+      <NavigationContainer linking={linking} fallback={<ActivityIndicator size="large" />}>
         <Stack.Navigator>
           {session && session.user ? (
             // Authenticated Stack
