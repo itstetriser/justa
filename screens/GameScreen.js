@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { getTranslation } from '../lib/translations';
-import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake } from '../lib/api';
+import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake, markQuestionCompleted } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 
 if (
@@ -19,11 +19,15 @@ const squirrelImg = require('../assets/squirrel.png');
 export default function GameScreen({ route, navigation }) {
     // Play Statistics
     const [sessionMistakes, setSessionMistakes] = useState(0);
+    const [currentQuestionMistakes, setCurrentQuestionMistakes] = useState(0); // Per-question count
     const [reviewCount, setReviewCount] = useState(0); // How many errors pending?
 
-    // Current Question State
+    const { level, category, appLang, userLang, isPremium, gameMode: initialGameMode } = route.params || {};
 
-    // Current Question State
+    // State
+    const [gameMode, setGameMode] = useState(initialGameMode || 'NEW');
+    const [question, setQuestion] = useState(null);
+    const [loading, setLoading] = useState(true);
     const [selectedWords, setSelectedWords] = useState([]);
     const [isCorrect, setIsCorrect] = useState(null);
     const [correctCount, setCorrectCount] = useState(0);
@@ -79,7 +83,7 @@ export default function GameScreen({ route, navigation }) {
             const { data: { user } } = await supabase.auth.getUser();
 
             // 1. Fetch ALL Questions for Level
-            let query = supabase.from('questions').select('*').eq('level', level);
+            let query = supabase.from('questions').select('*').ilike('level', level);
             if (category) {
                 query = query.eq('category', category);
             }
@@ -163,6 +167,7 @@ export default function GameScreen({ route, navigation }) {
             setQuestion({ ...q, words: parsedWords, isFavorite: favSet.has(q.id) });
             setTotalCorrectNeeded(needed);
             setCorrectCount(0);
+            setCurrentQuestionMistakes(0); // Reset for new question
 
             // Fetch Saved Status
             const isFav = await checkSavedStatus(user.id, q.id);
@@ -199,6 +204,7 @@ export default function GameScreen({ route, navigation }) {
 
     const handleWordSelect = async (wordObj) => {
         if (!question) return;
+        if (isCorrect) return; // Stop interaction immediately if already won
 
         const isAlreadyFound = selectedWords.some(w => w.id === wordObj.id);
         if (isAlreadyFound) return;
@@ -231,21 +237,18 @@ export default function GameScreen({ route, navigation }) {
                 setIsCorrect(true);
                 setShowWinModal(true);
 
-                // --- MARK SEEN ---
+                // --- MARK COMPLETED (Atomic) ---
+                // "Perfect" if no mistakes were made ON THIS QUESTION
                 if (user && question) {
-                    await markQuestionSeen(user.id, level, question.id);
-
-                    // --- RESOLVE MISTAKE ---
-                    // If no mistakes were made in THIS session, remove it from the mistake list (if it was there).
-                    if (sessionMistakes === 0) {
-                        await resolveQuestionMistake(user.id, level, question.id);
-                    }
+                    const isPerfect = currentQuestionMistakes === 0;
+                    await markQuestionCompleted(user.id, level, question.id, isPerfect);
                 }
             }
         } else {
             // Incorrect: Short Vibration
             Vibration.vibrate(50); // Distinct buzz
             setSessionMistakes(prev => prev + 1);
+            setCurrentQuestionMistakes(prev => prev + 1);
 
             // -3 Points (ONLY if IsCorrect is NOT true yet)
             if (!isCorrect && user) {
@@ -413,8 +416,9 @@ export default function GameScreen({ route, navigation }) {
                     return (
                         <TouchableOpacity
                             key={w.id}
-                            style={styles.wordChip}
+                            style={[styles.wordChip, isCorrect && { opacity: 0.5 }]}
                             onPress={() => handleWordSelect(w)}
+                            disabled={isCorrect}
                         >
                             <Text style={styles.wordChipText}>{w.word_text}</Text>
                         </TouchableOpacity>

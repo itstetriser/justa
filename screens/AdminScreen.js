@@ -10,14 +10,13 @@ export default function AdminScreen({ navigation }) {
     };
 
     return (
-        <View style={styles.container}>
-            <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-                    <Text style={styles.backText}>← Back</Text>
-                </TouchableOpacity>
-                <Text style={styles.headerTitle}>Admin Panel</Text>
-                <View style={{ width: 40 }} /> {/* Spacer */}
-            </View>
+        <View style={styles.container}><View style={styles.header}>
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+                <Text style={styles.backText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Admin Panel</Text>
+            <View style={{ width: 40 }} /> {/* Spacer */}
+        </View>
 
             <View style={styles.content}>
                 <Text style={styles.welcomeText}>Welcome, Admin!</Text>

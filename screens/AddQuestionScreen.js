@@ -14,7 +14,7 @@ export default function AddQuestionScreen({ navigation, route }) {
     const [loading, setLoading] = useState(false);
     const [selectedLang, setSelectedLang] = useState('tr');
 
-    const Levels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'IELTS', 'TOEFL'];
+    const Levels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
     const Languages = ['tr', 'en', 'es', 'de', 'fr', 'pt', 'jp', 'cn', 'ru', 'kr', 'ar'];
 
     React.useEffect(() => {

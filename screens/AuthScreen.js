@@ -173,7 +173,9 @@ const styles = StyleSheet.create({
         backgroundColor: COLORS.surface,
         borderRadius: LAYOUT.radius,
         padding: 25,
-        ...SHADOWS.medium,
+        // ...SHADOWS.medium, // Deprecated on web
+        boxShadow: '0px 4px 10px rgba(0,0,0,0.1)', // Web standard
+        elevation: 5, // Android
     },
     toggleContainer: {
         flexDirection: 'row',

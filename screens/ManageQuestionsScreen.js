@@ -1,402 +1,665 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Alert, ScrollView, Modal, Clipboard } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+    View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView,
+    FlatList, Alert, Modal, ActivityIndicator, Clipboard, KeyboardAvoidingView, Platform
+} from 'react-native';
 import { supabase } from '../lib/supabase';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 import { useFocusEffect } from '@react-navigation/native';
 
 export default function ManageQuestionsScreen({ navigation }) {
-    const [questions, setQuestions] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [selectedLevel, setSelectedLevel] = useState('ALL');
-    const [showStatsModal, setShowStatsModal] = useState(false);
-    const [wordStats, setWordStats] = useState([]);
+    const [activeTab, setActiveTab] = useState('ADD'); // 'ADD' | 'EDIT'
 
-    const LEVELS = ['ALL', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'IELTS', 'TOEFL'];
+    // --- ADD TAB STATE ---
+    const [bulkInput, setBulkInput] = useState('');
+    const [isAdding, setIsAdding] = useState(false);
+    const [addResult, setAddResult] = useState(null);
+
+    // --- EDIT TAB STATE ---
+    const [selectedLevel, setSelectedLevel] = useState('A1'); // Default to A1
+    const [questions, setQuestions] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [page, setPage] = useState(1);
+    const [limit] = useState(50);
+    const [totalQuestions, setTotalQuestions] = useState(0);
+    const [selectedIds, setSelectedIds] = useState(new Set());
+
+    // --- BATCH MODAL STATE ---
+    const [showBatchModal, setShowBatchModal] = useState(false);
+    const [batchInput, setBatchInput] = useState('');
+    const [batchResult, setBatchResult] = useState(null);
+
+    // Download Modal State
+    const [showDownloadModal, setShowDownloadModal] = useState(false);
+    const [targetLang, setTargetLang] = useState(''); // e.g., 'tr', 'kr'
+
+    const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+
+    // --- FETCH LOGIC (EDIT TAB) ---
+    const fetchQuestions = async (reset = false) => {
+        if (reset) {
+            setPage(1);
+            setQuestions([]);
+        }
+
+        setLoading(true);
+        try {
+            const start = (reset ? 0 : (page - 1)) * limit;
+            const end = start + limit - 1;
+
+            let query = supabase
+                .from('questions')
+                .select('*', { count: 'exact' })
+                .ilike('level', selectedLevel)
+                .order('created_at', { ascending: false }) // Newest first
+                .range(start, end);
+
+            const { data, count, error } = await query;
+
+            if (error) throw error;
+
+            if (reset) {
+                setQuestions(data);
+            } else {
+                setQuestions(prev => [...prev, ...data]);
+            }
+            setTotalQuestions(count || 0);
+        } catch (e) {
+            console.error("Fetch Error:", e);
+            Alert.alert("Error", "Failed to fetch questions.");
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useFocusEffect(
         useCallback(() => {
-            fetchQuestions();
-        }, [selectedLevel])
+            if (activeTab === 'EDIT') {
+                fetchQuestions(true);
+            }
+        }, [activeTab, selectedLevel])
     );
 
-    async function fetchQuestions() {
-        setLoading(true);
-        // Alias the relation to avoid collision with 'words' JSON column if it exists
-        let query = supabase.from('questions').select('*, linked_words:words(*)');
+    const handleLoadMore = () => {
+        if (!loading && questions.length < totalQuestions) {
+            setPage(prev => prev + 1);
+            fetchQuestions(); // Page updated in state, but need effect? No, fetch uses current state... wait.
+            // Better to trigger effect or pass page. 
+            // Simplified: Fetch next page explicitly
+            const nextPage = page + 1;
+            const start = (nextPage - 1) * limit;
+            const end = start + limit - 1;
 
-        if (selectedLevel !== 'ALL') {
-            query = query.eq('level', selectedLevel);
-        } else {
-            query = query.order('level', { ascending: true });
+            // Re-implement simplified load more logic inline to avoid state closure issues
+            (async () => {
+                setLoading(true);
+                const { data, error } = await supabase
+                    .from('questions')
+                    .select('*, words(*)')
+                    .ilike('level', selectedLevel)
+                    .order('created_at', { ascending: false })
+                    .range(start, end);
+
+                if (!error && data) {
+                    setQuestions(prev => [...prev, ...data]);
+                    setPage(nextPage);
+                }
+                setLoading(false);
+            })();
+        }
+    };
+
+    // --- ADD NEW LOGIC ---
+    const processBulkAdd = async () => {
+        if (!bulkInput.trim()) {
+            Alert.alert("Empty", "Please paste content first.");
+            return;
         }
 
-        const { data, error } = await query;
+        setIsAdding(true);
+        setAddResult(null);
 
-        if (error) {
-            Alert.alert('Error', error.message);
-        } else {
-            // Sort custom: A1-C2 if mixed
-            const sortOrder = {
-                'A1': 1, 'A2': 2, 'B1': 3, 'B2': 4, 'C1': 5, 'C2': 6,
-                'easy': 0, 'medium': 0, 'hard': 0 // Fallback
-            };
-            const sorted = data.sort((a, b) => (sortOrder[a.level] || 99) - (sortOrder[b.level] || 99));
-            setQuestions(sorted);
-        }
-        setLoading(false);
-    }
+        // Regex-based parsing can be fragile. Switch to splitting by " <<<" or just "<<<"
+        // Cleanup input first
+        const rawBlocks = bulkInput.split('<<<').filter(b => b.trim().length > 5); // Filter empty splits
 
-    const calculateWordStats = () => {
-        const stats = {};
+        const parsedItems = [];
+        const errors = [];
 
-        questions.forEach(q => {
-            // 1. Try Related Table Data first
-            if (q.linked_words && Array.isArray(q.linked_words) && q.linked_words.length > 0) {
-                q.linked_words.forEach(w => {
-                    const txt = w.word_text?.toLowerCase().trim();
-                    if (txt) stats[txt] = (stats[txt] || 0) + 1;
+        for (const block of rawBlocks) {
+            try {
+                // expecting: SENTENCE --- LEVEL --- CATEGORY --- [JSON] >>>
+                // clean up the trailing >>>
+                const cleanBlock = block.split('>>>')[0].trim();
+
+                const parts = cleanBlock.split('---');
+                if (parts.length < 4) {
+                    console.warn("Skipping invalid block:", cleanBlock.substring(0, 20));
+                    continue;
+                }
+
+                const rawSent = parts[0].trim();
+                const rawLevel = parts[1].trim();
+                const rawCat = parts[2].trim();
+                // The JSON might contain --- chars, so we join the rest back in case
+                const rawJson = parts.slice(3).join('---').trim();
+
+                const wordList = JSON.parse(rawJson);
+
+                // Prepare Words Data
+                const wordsToInsert = wordList.map(w => {
+                    const explanations = {};
+                    // Auto-detect "exp_" keys
+                    Object.keys(w).forEach(key => {
+                        if (key.startsWith('exp_')) {
+                            const langCode = key.replace('exp_', ''); // en, tr, sp...
+                            explanations[langCode] = w[key];
+                        }
+                    });
+
+                    return {
+                        word_text: w.word,
+                        is_correct: w.is_correct,
+                        explanations: explanations
+                        // translations: {} // Schema has it, but user input focused on exp
+                    };
                 });
+
+                parsedItems.push({
+                    sentence_en: rawSent,
+                    level: rawLevel,
+                    category: rawCat,
+                    words: wordsToInsert
+                });
+
+            } catch (e) {
+                console.error("Parse Error Item:", e);
+                errors.push(`Failed to parse block starting: ${block.substring(0, 30)}...`);
             }
-            // 2. Fallback to 'words' column (JSON or Array)
-            else if (q.words) {
-                let pool = q.words;
-                if (typeof pool === 'string') {
-                    try { pool = JSON.parse(pool); } catch (e) { }
-                }
-                if (Array.isArray(pool)) {
-                    pool.forEach(w => {
-                        // support both 'word_text' (new) and 'word' (legacy json)
-                        const txt = (w.word_text || w.word)?.toLowerCase().trim();
-                        if (txt) stats[txt] = (stats[txt] || 0) + 1;
+        }
+
+        if (parsedItems.length === 0) {
+            setIsAdding(false);
+            Alert.alert("Error", "No valid items found. Check format!");
+            return;
+        }
+
+        // --- BATCH INSERT ---
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const item of parsedItems) {
+            try {
+                // Single-Table Insert: Save words JSON directly to 'words' column
+                const { error: qError } = await supabase
+                    .from('questions')
+                    .insert({
+                        level: item.level,
+                        category: item.category,
+                        sentence_en: item.sentence_en,
+                        words: item.words, // JSONB insertion
+                        is_active: true
                     });
-                }
+
+                if (qError) throw qError;
+
+                successCount++;
+            } catch (e) {
+                console.error("Insert DB Error:", e);
+                failCount++;
             }
-            // 3. Fallback to 'word_pool' column (Legacy)
-            else if (q.word_pool) {
-                let pool = q.word_pool;
-                if (typeof pool === 'string') {
-                    try { pool = JSON.parse(pool); } catch (e) { }
+        }
+
+        setIsAdding(false);
+        setAddResult(`Success: ${successCount}\nFailed: ${failCount}`);
+        if (successCount > 0) setBulkInput(''); // Clear on success
+    };
+
+    // --- BATCH UPDATE LOGIC ---
+    const processBatchUpdate = async () => {
+        if (!batchInput.trim()) {
+            Alert.alert("Empty", "Please paste update parsing string.");
+            return;
+        }
+        setLoading(true);
+        setBatchResult(null);
+
+        // FORMAT: <<<ID---{"TARGET_WORD"---key:"val"}>>>
+        // e.g. <<<123-456---{"hotel"---exp_it:"..."}>>>
+        const blocks = batchInput.split('<<<').filter(b => b.trim().length > 5);
+        let success = 0;
+        let fail = 0;
+        const details = [];
+
+        for (const block of blocks) {
+            try {
+                const clean = block.split('>>>')[0].trim();
+
+                // NEW PARSING LOGIC:
+                // format: ID---{...}---{...}
+                // Naive split('---') breaks because {...} contains --- too.
+
+                // 1. Get ID (everything before first ---)
+                const firstDash = clean.indexOf('---');
+                if (firstDash === -1) {
+                    details.push(`Invalid Block format (no ID/separator): ${clean.substring(0, 20)}`);
+                    fail++;
+                    continue;
                 }
-                if (Array.isArray(pool)) {
-                    pool.forEach(w => {
-                        const txt = (w.word_text || w.word)?.toLowerCase().trim();
-                        if (txt) stats[txt] = (stats[txt] || 0) + 1;
-                    });
+
+                const qId = clean.substring(0, firstDash).trim();
+
+                // 2. Extract JSON-like blocks using Regex
+                // We look for anything wrapped in {}
+                const updateBlocks = clean.match(/\{.*?\}/g);
+
+                if (!updateBlocks || updateBlocks.length === 0) {
+                    details.push(`ID ${qId}: No update blocks found.`);
+                    fail++;
+                    continue;
                 }
+
+                // 1. Fetch current question
+                const { data: qData, error: qErr } = await supabase
+                    .from('questions')
+                    .select('words')
+                    .eq('id', qId)
+                    .single();
+
+                if (qErr || !qData) {
+                    details.push(`ID ${qId}: Not found or error.`);
+                    fail++;
+                    continue;
+                }
+
+                let currentWords = qData.words || [];
+                let modified = false;
+
+                // 2. Parse updates
+                // update string: {"hotel"---exp_it:"..."}  -> needs parsing
+                // Actually, the format user uses is a bit pseudo-json. 
+                // Let's assume user provides: {"word"---key:"val"} or multiple
+                // We will try to allow flexible JSON or just Regex parsing.
+
+                // Robust approach: 
+                // for each update part in the string:
+                // part = {"hotel"---exp_it:"..."}
+
+                updateBlocks.forEach(upPart => {
+                    // Remove braces
+                    const inner = upPart.trim().replace(/^{/, '').replace(/}$/, '').trim();
+                    // Split by ---
+                    // INNER: "hotel"---exp_it:"..."
+                    const p = inner.split('---');
+                    if (p.length < 2) return;
+
+                    const targetWord = p[0].replace(/"/g, '').trim();
+                    // p[1] could be 'exp_it: "..."'
+
+                    // Find word in DB array
+                    const wordIdx = currentWords.findIndex(w => (w.word_text || "").toLowerCase() === targetWord.toLowerCase());
+
+                    if (wordIdx !== -1) {
+                        const wordObj = currentWords[wordIdx];
+                        if (!wordObj.explanations) wordObj.explanations = {};
+
+                        const kv = p[1].trim();
+                        const colonIdx = kv.indexOf(':');
+                        if (colonIdx !== -1) {
+                            let key = kv.substring(0, colonIdx).trim(); // exp_it
+                            // Fix: Remove 'exp_' prefix to store clean lang code (e.g. 'it')
+                            if (key.startsWith('exp_')) key = key.replace('exp_', '');
+
+                            let val = kv.substring(colonIdx + 1).trim(); // "..."
+                            if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+
+                            wordObj.explanations[key] = val;
+                            modified = true;
+                        }
+                    } else {
+                        // Optional: track which word failed for better error msg
+                        // details.push(`Word '${targetWord}' not found in Q ${qId}`);
+                    }
+                });
+
+                // 3. Update DB if modified
+                if (modified) {
+                    const { error: uErr } = await supabase
+                        .from('questions')
+                        .update({ words: currentWords })
+                        .eq('id', qId);
+
+                    if (uErr) throw uErr;
+                    success++;
+                } else {
+                    details.push(`ID ${qId}: No words matched (Logic: ${currentWords.map(w => w.word_text).join(',')})`);
+                    fail++;
+                }
+
+            } catch (e) {
+                console.error("Batch Item Error", e);
+                fail++;
+                details.push("Parse/Save Error on block.");
             }
+        }
+
+        setLoading(false);
+        setBatchResult(`Finished. Success: ${success}, Fail: ${fail}\n\nDetails:\n${details.join('\n')}`);
+        if (success > 0) {
+            setBatchInput('');
+            // fetchQuestions(true); // Don't auto-refresh, let user see result first
+        }
+    };
+
+    // --- SELECTION LOGIC ---
+    const toggleSelection = (id) => {
+        const newSet = new Set(selectedIds);
+        if (newSet.has(id)) newSet.delete(id);
+        else newSet.add(id);
+        setSelectedIds(newSet);
+    };
+
+    const selectAll = () => {
+        if (selectedIds.size === questions.length) {
+            setSelectedIds(new Set());
+        } else {
+            const allIds = questions.map(q => q.id);
+            setSelectedIds(new Set(allIds));
+        }
+    };
+
+    // --- DOWNLOAD PARSER ---
+    const handleDownload = () => {
+        if (selectedIds.size === 0) {
+            Alert.alert("Select Questions", "Please select at least one question.");
+            return;
+        }
+        setTargetLang(''); // Reset
+        setShowDownloadModal(true);
+    };
+
+    const performDownload = () => {
+        // Format: 1 --- id --- sentence --- {word1...}-{word2...}
+        const selectedQuestions = questions.filter(q => selectedIds.has(q.id));
+
+        const lines = selectedQuestions.map((q, index) => {
+            const wordBlocks = (q.words || []).map(w => {
+                // Format: {"word"---exp_en:...---"exp_target":"..."}
+                // User requested: {"word"--- exp_en---exp_..(target)}
+
+                // Base: English + Target
+                const expEn = (w.explanations?.['en'] || w.explanations?.['exp_en'] || "").replace(/"/g, "'");
+
+                let block = `"${w.word_text}",---exp_en:"${expEn}"`;
+
+                if (targetLang) {
+                    const expTarget = (w.explanations?.[targetLang] || w.explanations?.[`exp_${targetLang}`] || "").replace(/"/g, "'");
+                    block += `---"exp_${targetLang}": "${expTarget}"`;
+                }
+
+                return `{${block}}`;
+            }).join('-');
+
+            return `${index + 1} --- ${q.id} --- sentence_en: ${q.sentence_en}---${wordBlocks}`;
         });
 
-        // Convert to array and sort
-        const sortedStats = Object.entries(stats)
-            .map(([word, count]) => ({ word, count }))
-            .sort((a, b) => b.count - a.count);
-
-        setWordStats(sortedStats);
-        setShowStatsModal(true);
+        const output = lines.join('\n\n');
+        setLoading(false);
+        setBatchResult(`Done! Success: ${successCount}, Failed: ${failCount}\n${errors.join('\n')}`);
+        if (successCount > 0) {
+            setBatchInput('');
+            // Refresh list if needed (optional)
+        }
     };
 
-    const copyStatsToClipboard = () => {
-        const csvContent = "Word,Count\n" + wordStats.map(w => `${w.word},${w.count}`).join('\n');
-        Clipboard.setString(csvContent);
-        Alert.alert('Success', 'Word usage stats copied to clipboard!');
-    };
 
-    const renderItem = ({ item }) => (
-        <TouchableOpacity
-            style={styles.card}
-            // Navigate to Edit (Assuming AddQuestionScreen can handle edit)
-            onPress={() => navigation.navigate('AddQuestion', { questionId: item.id })}
-        >
-            <View style={styles.cardHeader}>
-                <View style={[styles.badge, { backgroundColor: COLORS.levels[item.level] || COLORS.primary }]}>
-                    <Text style={styles.badgeText}>{item.level}</Text>
-                </View>
-                <Text style={styles.categoryText}>{item.category}</Text>
-            </View>
-            <Text style={styles.sentence}>{item.sentence_en}</Text>
-        </TouchableOpacity>
+    // --- RENDERERS ---
+
+    const renderAddTab = () => (
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+            <ScrollView style={{ flex: 1, padding: 20 }}>
+                <Text style={styles.label}>Paste Bulk Content (Add New):</Text>
+                <TextInput
+                    style={styles.textArea}
+                    multiline
+                    numberOfLines={15}
+                    placeholder={`<<<Sentence...---A2---Cat---[{"word":"abc", \n "exp_en":"...", \n "exp_tr":"..."}]>>>`}
+                    value={bulkInput}
+                    onChangeText={setBulkInput}
+                    textAlignVertical="top"
+                />
+
+                {addResult && (
+                    <Text style={{ marginVertical: 10, fontWeight: 'bold', color: COLORS.primary }}>
+                        {addResult}
+                    </Text>
+                )}
+
+                <TouchableOpacity
+                    style={styles.primaryBtn}
+                    onPress={processBulkAdd}
+                    disabled={isAdding}
+                >
+                    {isAdding ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Add Questions</Text>}
+                </TouchableOpacity>
+
+                <View style={{ height: 50 }} />
+            </ScrollView>
+        </KeyboardAvoidingView>
     );
+
+    const renderBatchModal = () => (
+        <Modal
+            visible={showBatchModal}
+            transparent={true}
+            animationType="slide"
+            onRequestClose={() => setShowBatchModal(false)}
+        >
+            <View style={styles.modalOverlay}>
+                <View style={[styles.modalContent, { height: '80%', width: '90%' }]}>
+                    <Text style={styles.modalTitle}>Batch Update</Text>
+                    <Text style={{ color: '#666', marginBottom: 10, fontSize: 12 }}>
+                        Format: {'<<<ID---{"word"---exp_jp:"..."}>>>'}
+                    </Text>
+
+                    <TextInput
+                        style={[styles.textArea, { flex: 1, marginBottom: 10 }]}
+                        multiline
+                        placeholder="Paste batch update string..."
+                        value={batchInput}
+                        onChangeText={setBatchInput}
+                        textAlignVertical="top"
+                    />
+
+                    {batchResult ? (
+                        <Text style={{ marginVertical: 10, fontWeight: 'bold', color: COLORS.primary }}>{batchResult}</Text>
+                    ) : null}
+
+                    <TouchableOpacity style={styles.primaryBtn} onPress={processBatchUpdate} disabled={loading}>
+                        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Run Update</Text>}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={() => setShowBatchModal(false)} style={{ marginTop: 15 }}>
+                        <Text style={{ color: '#999' }}>Close</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        </Modal>
+    );
+
+    const renderEditTab = () => (
+        <View style={{ flex: 1 }}>
+            {/* Level Tabs */}
+            <View style={styles.levelRow}>
+                {LEVELS.map(L => (
+                    <TouchableOpacity
+                        key={L}
+                        style={[styles.levelTab, selectedLevel === L && styles.activeLevelTab]}
+                        onPress={() => setSelectedLevel(L)}
+                    >
+                        <Text style={[styles.levelText, selectedLevel === L && { color: '#fff' }]}>{L}</Text>
+                    </TouchableOpacity>
+                ))}
+            </View>
+
+            {/* Toolbar */}
+            <View style={styles.toolbar}>
+                <TouchableOpacity onPress={selectAll}>
+                    <Text style={{ color: COLORS.primary, fontWeight: 'bold' }}>
+                        {selectedIds.size === questions.length && questions.length > 0 ? 'Deselect All' : 'Select All'} (On Page)
+                    </Text>
+                </TouchableOpacity>
+                <Text style={{ color: '#999' }}>{questions.length} / {totalQuestions}</Text>
+
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                    {/* Batch Update Button */}
+                    <TouchableOpacity
+                        style={[styles.actionBtn, { backgroundColor: '#6c757d' }]}
+                        onPress={() => setShowBatchModal(true)}
+                    >
+                        <Text style={{ color: '#fff', fontSize: 12 }}>Batch Update</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={[styles.actionBtn, { opacity: selectedIds.size ? 1 : 0.5 }]}
+                        onPress={handleDownload}
+                        disabled={selectedIds.size === 0}
+                    >
+                        <Text style={{ color: '#fff', fontSize: 12 }}>Download Meta</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            <FlatList
+                data={questions}
+                keyExtractor={item => item.id}
+                contentContainerStyle={{ paddingBottom: 80 }}
+                renderItem={({ item, index }) => (
+                    <TouchableOpacity
+                        style={[styles.row, selectedIds.has(item.id) && styles.selectedRow]}
+                        onPress={() => toggleSelection(item.id)}
+                    >
+                        <View style={{ width: 30, alignItems: 'center' }}>
+                            <Text style={{ fontSize: 12, color: '#999' }}>{index + 1}</Text>
+                        </View>
+                        <View style={{ flex: 1, paddingHorizontal: 10 }}>
+                            <Text style={styles.rowText} numberOfLines={2}>{item.sentence_en}</Text>
+                            <Text style={{ fontSize: 10, color: '#999' }}>{item.category} • {item.words?.length} words</Text>
+                            <Text style={{ fontSize: 8, color: '#ccc' }}>{item.id}</Text>
+                        </View>
+                        <View style={styles.checkbox}>
+                            {selectedIds.has(item.id) && <Text style={{ color: COLORS.primary }}>✓</Text>}
+                        </View>
+                    </TouchableOpacity>
+                )}
+                onEndReached={handleLoadMore}
+                onEndReachedThreshold={0.5}
+                ListFooterComponent={loading ? <ActivityIndicator style={{ margin: 20 }} /> : null}
+            />
+        </View>
+    );
+
+    const renderDownloadModal = () => (
+        <Modal
+            visible={showDownloadModal}
+            transparent={true}
+            animationType="slide"
+            onRequestClose={() => setShowDownloadModal(false)}
+        >
+            <View style={styles.modalOverlay}>
+                <View style={styles.modalContent}>
+                    <Text style={styles.modalTitle}>Download Details</Text>
+                    <Text style={{ color: '#666', marginBottom: 20 }}>Select extra language (EN included by default):</Text>
+
+                    <TextInput
+                        style={styles.input}
+                        placeholder="e.g. tr, kr, sp (Language Code)"
+                        value={targetLang}
+                        onChangeText={setTargetLang}
+                        autoCapitalize="none"
+                    />
+
+                    <TouchableOpacity style={styles.primaryBtn} onPress={performDownload}>
+                        <Text style={styles.btnText}>Generate & Copy</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={() => setShowDownloadModal(false)} style={{ marginTop: 15 }}>
+                        <Text style={{ color: '#999' }}>Cancel</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        </Modal>
+    );
+
+
 
     return (
         <View style={styles.container}>
-            <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-                    <Text style={styles.backText}>← Back</Text>
+            {/* Header Tabs */}
+            <View style={styles.tabContainer}>
+                <TouchableOpacity
+                    style={[styles.tab, activeTab === 'ADD' && styles.activeTab]}
+                    onPress={() => setActiveTab('ADD')}
+                >
+                    <Text style={[styles.tabText, activeTab === 'ADD' && styles.activeTabText]}>Add New Questions</Text>
                 </TouchableOpacity>
-                <Text style={styles.headerTitle}>Questions</Text>
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                    <TouchableOpacity
-                        style={styles.addBtn}
-                        onPress={() => navigation.navigate('BulkAdd')}
-                    >
-                        <Text style={[styles.addBtnText, { fontSize: 14, marginTop: 0 }]}>CSV</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={styles.addBtn}
-                        onPress={() => navigation.navigate('AddQuestion')}
-                    >
-                        <Text style={styles.addBtnText}>+</Text>
-                    </TouchableOpacity>
-                </View>
+                <TouchableOpacity
+                    style={[styles.tab, activeTab === 'EDIT' && styles.activeTab]}
+                    onPress={() => setActiveTab('EDIT')}
+                >
+                    <Text style={[styles.tabText, activeTab === 'EDIT' && styles.activeTabText]}>Edit Questions</Text>
+                </TouchableOpacity>
             </View>
 
-            {/* 1. Level Filter */}
-            <View style={styles.filterContainer}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    {LEVELS.map(lvl => (
-                        <TouchableOpacity
-                            key={lvl}
-                            style={[
-                                styles.filterChip,
-                                selectedLevel === lvl && styles.filterChipActive,
-                                selectedLevel === lvl && lvl !== 'ALL' && { backgroundColor: COLORS.levels[lvl] }
-                            ]}
-                            onPress={() => setSelectedLevel(lvl)}
-                        >
-                            <Text style={[
-                                styles.filterText,
-                                selectedLevel === lvl && styles.filterTextActive
-                            ]}>{lvl}</Text>
-                        </TouchableOpacity>
-                    ))}
-                </ScrollView>
-            </View>
-
-            {/* 2. Stats Action */}
-            <TouchableOpacity style={styles.statsBtn} onPress={calculateWordStats}>
-                <Text style={styles.statsBtnText}>📊 Analyze Words in {selectedLevel}</Text>
-            </TouchableOpacity>
-
-            {/* 3. Stats Modal */}
-            <Modal
-                animationType="slide"
-                visible={showStatsModal}
-                onRequestClose={() => setShowStatsModal(false)}
-            >
-                <View style={styles.modalContainer}>
-                    <View style={styles.modalHeader}>
-                        <Text style={styles.modalTitle}>Word Usage ({selectedLevel})</Text>
-                        <View style={{ flexDirection: 'row', gap: 15 }}>
-                            <TouchableOpacity onPress={copyStatsToClipboard}>
-                                <Text style={[styles.closeText, { color: COLORS.secondary }]}>Copy</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={() => setShowStatsModal(false)}>
-                                <Text style={styles.closeText}>Close</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-
-                    <FlatList
-                        data={wordStats}
-                        keyExtractor={item => item.word}
-                        renderItem={({ item }) => (
-                            <View style={styles.statRow}>
-                                <Text style={styles.statWord}>{item.word}</Text>
-                                <View style={styles.statCountBadge}>
-                                    <Text style={styles.statCount}>{item.count}</Text>
-                                </View>
-                            </View>
-                        )}
-                        contentContainerStyle={{ padding: 20 }}
-                    />
-                </View>
-            </Modal>
-
-            {loading ? (
-                <View style={styles.center}>
-                    <ActivityIndicator size="large" color={COLORS.primary} />
-                </View>
-            ) : (
-                <FlatList
-                    data={questions}
-                    keyExtractor={item => item.id}
-                    renderItem={renderItem}
-                    contentContainerStyle={styles.listContent}
-                    ListEmptyComponent={
-                        <Text style={styles.emptyText}>No questions found.</Text>
-                    }
-                />
-            )}
+            {activeTab === 'ADD' ? renderAddTab() : renderEditTab()}
+            {renderDownloadModal()}
+            {renderBatchModal()}
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: COLORS.background,
-        paddingTop: 50,
-    },
-    center: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    header: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        paddingHorizontal: LAYOUT.padding,
-        marginBottom: 20,
-    },
-    backBtn: {
-        padding: 5,
-    },
-    backText: {
-        color: COLORS.textSecondary,
-        fontSize: 16,
-        fontWeight: '600',
-    },
-    headerTitle: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: COLORS.textPrimary,
-    },
-    addBtn: {
-        backgroundColor: COLORS.primary,
-        width: 35,
-        height: 35,
-        borderRadius: 17.5,
-        justifyContent: 'center',
-        alignItems: 'center',
-        ...SHADOWS.small,
-    },
-    addBtnText: {
-        color: '#fff',
-        fontSize: 24,
-        fontWeight: 'bold',
-        marginTop: -2,
-    },
-    listContent: {
-        paddingHorizontal: LAYOUT.padding,
-        paddingBottom: 40,
-    },
-    card: {
+    container: { flex: 1, backgroundColor: COLORS.background },
+    tabContainer: { flexDirection: 'row', backgroundColor: COLORS.surface, elevation: 2 },
+    tab: { flex: 1, padding: 15, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
+    activeTab: { borderBottomColor: COLORS.primary },
+    tabText: { fontWeight: 'bold', color: COLORS.textSecondary },
+    activeTabText: { color: COLORS.primary },
+    label: { fontWeight: 'bold', marginBottom: 5, color: COLORS.textPrimary },
+    textArea: {
         backgroundColor: COLORS.surface,
-        borderRadius: LAYOUT.radius,
-        padding: 15,
-        marginBottom: 15,
-        ...SHADOWS.small,
-    },
-    cardHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 10,
-    },
-    badge: {
-        paddingVertical: 4,
-        paddingHorizontal: 10,
-        borderRadius: 15,
-    },
-    badge_easy: { backgroundColor: COLORS.levels.easy },
-    badge_medium: { backgroundColor: COLORS.levels.medium },
-    badge_hard: { backgroundColor: COLORS.levels.hard },
-    badgeText: {
-        color: '#fff',
-        fontSize: 10,
-        fontWeight: 'bold',
-        textTransform: 'uppercase',
-    },
-    categoryText: {
-        color: COLORS.textSecondary,
-        fontSize: 12,
-        fontStyle: 'italic',
-    },
-    sentence: {
-        color: COLORS.textPrimary,
-        fontSize: 16,
-        lineHeight: 24,
-    },
-    emptyText: {
-        textAlign: 'center',
-        color: COLORS.textSecondary,
-        marginTop: 50,
-        fontSize: 16,
-    },
-    // New Styles
-    filterContainer: {
-        paddingHorizontal: LAYOUT.padding,
-        marginBottom: 15,
-        height: 50,
-    },
-    filterChip: {
-        paddingHorizontal: 16,
-        paddingVertical: 8,
-        borderRadius: 20,
-        backgroundColor: COLORS.surface,
-        marginRight: 10,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        height: 36,
-    },
-    filterChipActive: {
-        backgroundColor: COLORS.primary,
-        borderColor: 'transparent',
-    },
-    filterText: {
-        color: COLORS.textSecondary,
-        fontWeight: '600',
-    },
-    filterTextActive: {
-        color: '#fff',
-    },
-    statsBtn: {
-        marginHorizontal: LAYOUT.padding,
-        marginBottom: 15,
-        padding: 12,
-        backgroundColor: COLORS.secondary,
-        borderRadius: 12,
-        alignItems: 'center',
-    },
-    statsBtnText: {
-        color: '#fff',
-        fontWeight: 'bold',
-    },
-    // Modal
-    modalContainer: {
-        flex: 1,
-        backgroundColor: COLORS.background,
-        paddingTop: 50,
-    },
-    modalHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        paddingHorizontal: 20,
-        paddingBottom: 20,
-        borderBottomWidth: 1,
-        borderBottomColor: COLORS.border,
-    },
-    modalTitle: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: COLORS.textPrimary,
-    },
-    closeText: {
-        color: COLORS.primary,
-        fontSize: 16,
-        fontWeight: '600',
-    },
-    statRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        paddingVertical: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: COLORS.border,
-    },
-    statWord: {
-        fontSize: 16,
-        color: COLORS.textPrimary,
-    },
-    statCountBadge: {
-        backgroundColor: '#E5F2FF',
-        paddingHorizontal: 10,
-        paddingVertical: 2,
         borderRadius: 10,
+        padding: 15,
+        borderWidth: 1,
+        borderColor: '#eee',
+        minHeight: 200,
+        textAlignVertical: 'top'
     },
-    statCount: {
-        color: COLORS.primary,
-        fontWeight: 'bold',
+    primaryBtn: {
+        backgroundColor: COLORS.primary,
+        padding: 15,
+        borderRadius: 10,
+        alignItems: 'center',
+        marginTop: 20
     },
+    btnText: { color: '#fff', fontWeight: 'bold' },
+    // Edit Styles
+    levelRow: { flexDirection: 'row', padding: 10, backgroundColor: '#fff', borderBottomWidth: 1, borderColor: '#eee' },
+    levelTab: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 15, marginRight: 8, backgroundColor: '#f0f0f0' },
+    activeLevelTab: { backgroundColor: COLORS.primary },
+    levelText: { fontSize: 12, fontWeight: 'bold', color: '#666' },
+    toolbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 10, backgroundColor: '#fafafa' },
+    actionBtn: { backgroundColor: COLORS.secondary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5 },
+    row: {
+        flexDirection: 'row', alignItems: 'center', padding: 15, backgroundColor: COLORS.surface,
+        borderBottomWidth: 1, borderColor: '#f0f0f0'
+    },
+    selectedRow: { backgroundColor: '#E5F2FF' },
+    rowText: { color: COLORS.textPrimary, fontWeight: '500' },
+    checkbox: { width: 20, height: 20, borderWidth: 1, borderColor: '#ccc', justifyContent: 'center', alignItems: 'center' },
+    // Modal
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 30 },
+    modalContent: { backgroundColor: '#fff', borderRadius: 15, padding: 25, alignItems: 'center', width: '90%' },
+    modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 15 },
+    input: { backgroundColor: '#f5f5f5', padding: 12, borderRadius: 8, width: '100%' }
 });

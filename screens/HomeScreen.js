@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchUserProfile, updateDailyGoal, fetchCategories, updateUserLevel, resetUserPoints, updateUserLanguage, fetchUserLevelProgress, fetchUserStats } from '../lib/api';
+import { fetchUserProfile, updateDailyGoal, fetchCategories, updateUserLevel, resetUserPoints, updateUserLanguage, fetchUserLevelProgress, fetchUserStats, fetchLevelCounts, resetSeenQuestions } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 import { getTranslation } from '../lib/translations';
 import WordOfTheDay from '../components/WordOfTheDay';
@@ -28,6 +28,8 @@ export default function HomeScreen({ navigation }) {
     // Practice Modal
     const [showPracticeModal, setShowPracticeModal] = useState(false);
     const [loadingPractice, setLoadingPractice] = useState(false);
+    const [showResetModal, setShowResetModal] = useState(false);
+    const [includeMistakesInReset, setIncludeMistakesInReset] = useState(false);
 
     // Animations
     const progressAnim = React.useRef(new Animated.Value(0)).current;
@@ -35,7 +37,7 @@ export default function HomeScreen({ navigation }) {
 
     const queryClient = useQueryClient();
 
-    const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'TOEFL', 'IELTS'];
+    const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
     const LEVEL_COLORS = {
         'A1': COLORS.levels.A1, 'A2': COLORS.levels.A2,
         'B1': COLORS.levels.B1, 'B2': COLORS.levels.B2,
@@ -138,13 +140,41 @@ export default function HomeScreen({ navigation }) {
         queryClient.invalidateQueries(['profile', userId]);
     };
 
-    const handleStartPractice = () => {
+    // Practice Counts
+    const [practiceCounts, setPracticeCounts] = useState({ new: 0, mistakes: 0, favorites: 0 });
+
+    const handleStartPractice = async () => {
         // Open the options modal
         setShowPracticeModal(true);
+        setLoadingPractice(true);
+        try {
+            const counts = await fetchLevelCounts(userId, currentLevel);
+            setPracticeCounts({
+                new: counts.newCount,
+                mistakes: counts.mistakeCount,
+                favorites: counts.favoriteCount,
+                seen: counts.seenCount,
+                total: counts.totalCount
+            });
+        } catch (e) {
+            console.error("Failed to fetch counts:", e);
+        } finally {
+            setLoadingPractice(false);
+        }
     };
+
+    // Deck Reset Modal
+
 
     const handleLaunchGame = async (mode) => {
         // Pre-flight Check: Don't navigate if there's nothing to play
+        if (mode === 'NEW') {
+            if (practiceCounts.new === 0) {
+                setShowResetModal(true);
+                return;
+            }
+        }
+
         if (mode === 'REVIEW' || mode === 'FAVORITES') {
             try {
                 // We need to check if they actually have data
@@ -167,7 +197,7 @@ export default function HomeScreen({ navigation }) {
                 }
             } catch (e) {
                 console.error("Pre-check failed:", e);
-                // Allow navigation on error so GameScreen can handle/retry? 
+                // Allow navigation on error so GameScreen can handle/retry?
                 // Or just show alert.
             }
         }
@@ -183,11 +213,59 @@ export default function HomeScreen({ navigation }) {
         });
     };
 
+    const confirmDeckReset = async () => {
+        try {
+            setLoadingPractice(true);
+            // includeMistakesInReset = Reset mistakes too (true) or keep them (false)
+            // exclude favorites always (false)
+            const freedCount = await resetSeenQuestions(userId, currentLevel, includeMistakesInReset, false);
+
+            if (freedCount <= 0) {
+                // Should technically not happen if correct questions exist, but just in case
+                Alert.alert(t('oops'), t('deckStillEmpty') || "Nothing to restart. Are you sure you have questions to reset?");
+                return;
+            }
+
+            // Refetch counts
+            await handleStartPractice();
+
+            const counts = await fetchLevelCounts(userId, currentLevel);
+            setPracticeCounts({
+                new: counts.newCount,
+                mistakes: counts.mistakeCount,
+                favorites: counts.favoriteCount,
+                seen: counts.seenCount,
+                total: counts.totalCount
+            });
+
+            setShowResetModal(false);
+            setShowPracticeModal(false);
+
+            // Navigate to game immediately
+            navigation.navigate('Game', {
+                level: currentLevel,
+                category: null,
+                appLang: profile?.app_lang,
+                userLang: profile?.native_lang,
+                isPremium: profile?.is_premium,
+                gameMode: 'NEW'
+            });
+
+            Alert.alert(t('success'), t('deckResetSuccess') || "List restarted!");
+        } catch (error) {
+            console.error('Reset error:', error);
+            Alert.alert('Error', 'Failed to restart list');
+        } finally {
+            setLoadingPractice(false);
+        }
+    };
+
+
+
     // Logic: Level Change Preparation
     const handleLevelSelect = (newLevel) => {
         const oldIndex = LEVELS.indexOf(currentLevel);
         const newIndex = LEVELS.indexOf(newLevel);
-
         if (newLevel === currentLevel) {
             setShowLevelModal(false);
             return;
@@ -443,55 +521,7 @@ export default function HomeScreen({ navigation }) {
 
             </ScrollView>
 
-            {/* Practice Options Modal */}
-            <Modal
-                visible={showPracticeModal}
-                transparent={true}
-                animationType="fade"
-                onRequestClose={() => setShowPracticeModal(false)}
-            >
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        {loadingPractice ? (
-                            <ActivityIndicator size="large" color={COLORS.primary} style={{ padding: 20 }} />
-                        ) : (
-                            <>
-                                <Text style={styles.modalEmoji}>🎮</Text>
-                                <Text style={styles.modalTitle}>{t('startPractice')}</Text>
-                                <Text style={styles.modalDesc}>Choose what to practice:</Text>
 
-                                {/* Option 1: New Questions */}
-                                <TouchableOpacity
-                                    style={[styles.premiumBtn, { backgroundColor: COLORS.primary }]}
-                                    onPress={() => handleLaunchGame('NEW')}
-                                >
-                                    <Text style={styles.premiumBtnText}>🆕 {t('newQuestions') || 'New Questions'}</Text>
-                                </TouchableOpacity>
-
-                                {/* Option 2: Mistakes */}
-                                <TouchableOpacity
-                                    style={[styles.premiumBtn, { backgroundColor: COLORS.error, marginTop: 10 }]}
-                                    onPress={() => handleLaunchGame('REVIEW')}
-                                >
-                                    <Text style={styles.premiumBtnText}>🧠 {t('reviewMistakes') || 'Review Mistakes'}</Text>
-                                </TouchableOpacity>
-
-                                {/* Option 3: Favorites */}
-                                <TouchableOpacity
-                                    style={[styles.premiumBtn, { backgroundColor: COLORS.secondary, marginTop: 10 }]}
-                                    onPress={() => handleLaunchGame('FAVORITES')}
-                                >
-                                    <Text style={styles.premiumBtnText}>❤️ {t('favorites') || 'Favorites'}</Text>
-                                </TouchableOpacity>
-
-                                <TouchableOpacity onPress={() => setShowPracticeModal(false)} style={{ marginTop: 20 }}>
-                                    <Text style={styles.closeModalText}>{t('cancel')}</Text>
-                                </TouchableOpacity>
-                            </>
-                        )}
-                    </View>
-                </View>
-            </Modal>
 
             {/* Category Selection Modal */}
             <Modal
@@ -563,7 +593,54 @@ export default function HomeScreen({ navigation }) {
                 </View>
             </Modal>
 
-            {/* Confirmation Modal */}
+            {/* Restart List Modal (Specialized) */}
+            <Modal
+                visible={showResetModal}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setShowResetModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={{ fontSize: 50, marginBottom: 15 }}>↻</Text>
+                        <Text style={styles.modalTitle}>
+                            {t('restartList') || 'Restart List'}
+                        </Text>
+
+                        <Text style={styles.modalDesc}>
+                            {t('restartDesc') || 'All progress will be restarted for this level.'}
+                        </Text>
+
+                        {/* Checkbox: Add Mistaken Questions */}
+                        <TouchableOpacity
+                            style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20, padding: 10, backgroundColor: COLORS.background, borderRadius: 10, width: '100%' }}
+                            onPress={() => setIncludeMistakesInReset(!includeMistakesInReset)}
+                        >
+                            <View style={{ width: 24, height: 24, borderRadius: 6, borderWidth: 2, borderColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginRight: 10, backgroundColor: includeMistakesInReset ? COLORS.primary : 'transparent' }}>
+                                {includeMistakesInReset && <Text style={{ color: '#fff', fontWeight: 'bold' }}>✓</Text>}
+                            </View>
+                            <Text style={{ flex: 1, color: COLORS.textPrimary }}>
+                                {t('addMistakenToNew') || 'Add mistaken question to new list (mistaken list will be reset too)'}
+                            </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.saveBtn, { backgroundColor: COLORS.primary }]}
+                            onPress={confirmDeckReset}
+                        >
+                            <Text style={styles.saveBtnText}>
+                                {t('confirmRestart') || 'Confirm Restart'}
+                            </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity onPress={() => setShowResetModal(false)} style={{ marginTop: 15 }}>
+                            <Text style={styles.closeModalText}>{t('cancel')}</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Confirmation Modal (Generic - Keep as is) */}
             <Modal
                 visible={showConfirmModal}
                 transparent={true}
@@ -643,19 +720,33 @@ export default function HomeScreen({ navigation }) {
                         <Text style={styles.modalDesc}>{t('chooseMode') || 'Choose how you want to practice:'}</Text>
 
                         {/* Option 1: New Questions */}
-                        <TouchableOpacity
-                            style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.success }]}
-                            onPress={() => handleLaunchGame('NEW')}
-                        >
-                            <Text style={styles.saveBtnText}>✨ {t('newQuestions') || 'New Questions'}</Text>
-                        </TouchableOpacity>
+                        {/* Option 1: New Questions OR Restart List */}
+                        {practiceCounts.new > 0 ? (
+                            <TouchableOpacity
+                                style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.success }]}
+                                onPress={() => handleLaunchGame('NEW')}
+                            >
+                                <Text style={styles.saveBtnText}>✨ {t('newQuestions') || 'New Questions'} ({practiceCounts.new})</Text>
+                            </TouchableOpacity>
+                        ) : (
+                            <TouchableOpacity
+                                style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.primary }]}
+                                onPress={() => {
+                                    setShowPracticeModal(false);
+                                    // Trigger the specialized Restart Flow
+                                    setShowResetModal(true);
+                                }}
+                            >
+                                <Text style={styles.saveBtnText}>↻ {t('restartList') || 'Restart List'}</Text>
+                            </TouchableOpacity>
+                        )}
 
                         {/* Option 2: Favorites */}
                         <TouchableOpacity
                             style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.secondary }]}
                             onPress={() => handleLaunchGame('FAVORITES')}
                         >
-                            <Text style={styles.saveBtnText}>❤️ {t('favoriteQuestions') || 'Favorite Questions'}</Text>
+                            <Text style={styles.saveBtnText}>❤️ {t('favoriteQuestions') || 'Favorite Questions'} ({practiceCounts.favorites})</Text>
                         </TouchableOpacity>
 
                         {/* Option 3: Retry Mistakes */}
@@ -663,8 +754,14 @@ export default function HomeScreen({ navigation }) {
                             style={[styles.saveBtn, { marginBottom: 10, backgroundColor: COLORS.error }]}
                             onPress={() => handleLaunchGame('REVIEW')}
                         >
-                            <Text style={styles.saveBtnText}>💪 {t('retryMistakes') || 'Retry Mistakes'}</Text>
+                            <Text style={styles.saveBtnText}>💪 {t('retryMistakes') || 'Retry Mistakes'} ({practiceCounts.mistakes})</Text>
                         </TouchableOpacity>
+
+                        <View style={{ marginTop: 10, padding: 10, backgroundColor: COLORS.backgroundSecondary, borderRadius: 10, alignSelf: 'stretch' }}>
+                            <Text style={{ textAlign: 'center', color: COLORS.textSecondary }}>
+                                {t('seenQuestions') || 'Seen Questions'}: {practiceCounts.seen || 0} / {practiceCounts.total || 0}
+                            </Text>
+                        </View>
 
                         <TouchableOpacity onPress={() => setShowPracticeModal(false)} style={{ marginTop: 15 }}>
                             <Text style={styles.closeModalText}>{t('cancel')}</Text>
@@ -715,11 +812,45 @@ export default function HomeScreen({ navigation }) {
                     </View>
                 </View>
             </Modal>
-        </View>
+
+
+
+
+        </View >
     );
 }
 
 const styles = StyleSheet.create({
+    checkboxRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        width: '100%',
+        paddingVertical: 10,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0'
+    },
+    checkboxLabel: {
+        fontSize: 16,
+        color: COLORS.textPrimary
+    },
+    checkbox: {
+        width: 24,
+        height: 24,
+        borderRadius: 6,
+        borderWidth: 2,
+        borderColor: COLORS.primary,
+        justifyContent: 'center',
+        alignItems: 'center'
+    },
+    checkboxChecked: {
+        backgroundColor: COLORS.primary
+    },
+    checkmark: {
+        color: '#fff',
+        fontWeight: 'bold',
+        fontSize: 14
+    },
     container: {
         flex: 1,
         backgroundColor: COLORS.background,

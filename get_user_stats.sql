@@ -15,7 +15,7 @@ begin
   -- 1. Get all seen question IDs across all levels
   -- user_level_progress has seen_ids array. We need to unnest them.
   with all_seen as (
-    select distinct unnest(seen_ids) as q_id
+    select distinct jsonb_array_elements_text(seen_ids)::uuid as q_id
     from public.user_level_progress
     where user_id = p_user_id
   )
@@ -36,3 +36,8 @@ begin
   );
 end;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.get_user_stats(uuid) TO postgres;
+GRANT EXECUTE ON FUNCTION public.get_user_stats(uuid) TO anon;
+GRANT EXECUTE ON FUNCTION public.get_user_stats(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_user_stats(uuid) TO service_role;
