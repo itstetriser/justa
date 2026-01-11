@@ -456,14 +456,14 @@ export default function ManageQuestionsScreen({ navigation }) {
             onRequestClose={() => setShowBatchModal(false)}
         >
             <View style={styles.modalOverlay}>
-                <View style={[styles.modalContent, { height: '80%', width: '90%' }]}>
+                <View style={[styles.modalContent, { height: '80%', width: '90%', maxWidth: 800 }]}>
                     <Text style={styles.modalTitle}>Batch Update</Text>
                     <Text style={{ color: '#666', marginBottom: 10, fontSize: 12 }}>
                         Format: {'<<<ID---{"word"---exp_jp:"..."}>>>'}
                     </Text>
 
                     <TextInput
-                        style={[styles.textArea, { flex: 1, marginBottom: 10 }]}
+                        style={[styles.textArea, { flex: 1, marginBottom: 10, width: '100%' }]}
                         multiline
                         placeholder="Paste batch update string..."
                         value={batchInput}
