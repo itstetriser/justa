@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { getTranslation } from '../lib/translations';
-import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake, markQuestionCompleted } from '../lib/api';
+import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake, markQuestionCompleted, recordAnswerStats } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 
 if (
@@ -59,6 +59,8 @@ export default function GameScreen({ route, navigation }) {
     const [isSaved, setIsSaved] = useState(false);
 
     const [sessionScore, setSessionScore] = useState(0);
+    // State to track if we've already counted this "session" for the question stats
+    const [statsRecorded, setStatsRecorded] = useState(false);
 
     // Helper for translations (UI Language)
     const t = (key) => getTranslation(appLang, key);
@@ -79,6 +81,7 @@ export default function GameScreen({ route, navigation }) {
             setSessionMistakes(0);
             setLevelComplete(false);
             setShowWinModal(false);
+            setStatsRecorded(false);
 
             const { data: { user } } = await supabase.auth.getUser();
 
@@ -150,10 +153,17 @@ export default function GameScreen({ route, navigation }) {
             const q = pool[randomIndex];
 
             // Parse Words
+            // Now 'q.words' should be the array from the JOIN (real table data).
+            // Fallback to pool if something is weird, but JOIN is preferred.
             let parsedWords = [];
+
+            // Should be array from join, or json from legacy column
             const rawWords = q.words || q.word_pool;
-            if (rawWords) {
-                parsedWords = typeof rawWords === 'string' ? JSON.parse(rawWords) : rawWords;
+
+            if (Array.isArray(rawWords)) {
+                parsedWords = rawWords;
+            } else if (typeof rawWords === 'string') {
+                parsedWords = JSON.parse(rawWords);
             }
             parsedWords = parsedWords.map((w, index) => ({
                 ...w,
@@ -211,8 +221,34 @@ export default function GameScreen({ route, navigation }) {
 
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
+        // Determine if we should increment 'times_asked' (only once per question load)
+        const shouldIncrementAsked = !statsRecorded;
+        if (shouldIncrementAsked) {
+            setStatsRecorded(true);
+        }
+
+        // OPTIMISTIC VALIDATION:
+        // Update local stats immediately
+        setQuestion(prev => {
+            const newTimesAsked = (prev.times_asked || 0) + (shouldIncrementAsked ? 1 : 0);
+            const newWords = prev.words.map(w => {
+                // Match by TEXT now (stats key)
+                if (w.word_text === wordObj.word_text) {
+                    return { ...w, times_picked: (w.times_picked || 0) + 1 };
+                }
+                return w;
+            });
+            return { ...prev, times_asked: newTimesAsked, words: newWords };
+        });
+
+        // Update local stats for the selected word (Optimistic Update)
+        const updatedWordObj = {
+            ...wordObj,
+            times_picked: (wordObj.times_picked || 0) + 1
+        };
+
         // Add to selected list regardless of correctness (removes from pool)
-        const newFound = [...selectedWords, wordObj];
+        const newFound = [...selectedWords, updatedWordObj];
         setSelectedWords(newFound);
 
         const { data: { user } } = await supabase.auth.getUser();
@@ -230,6 +266,11 @@ export default function GameScreen({ route, navigation }) {
                 // Background DB Sync
                 await updateUserPointTransaction(user.id, 10);
                 await updateUserStreak(user.id);
+            }
+
+            // --- RECORD ANSWER STATS ---
+            if (user && question) {
+                recordAnswerStats(question.id, wordObj.word_text, true, shouldIncrementAsked);
             }
 
             // WIN CONDITION: Must find ALL correct answers
@@ -256,6 +297,11 @@ export default function GameScreen({ route, navigation }) {
                 await updateUserPointTransaction(user.id, -3);
                 // --- RECORD MISTAKE ---
                 await recordQuestionMistake(user.id, level, question.id);
+            }
+
+            // --- RECORD ANSWER STATS ---
+            if (user && question) {
+                recordAnswerStats(question.id, wordObj.word_text, false, shouldIncrementAsked);
             }
 
             // Robust Explanation Lookup (for logging/debugging if needed)
@@ -455,6 +501,13 @@ export default function GameScreen({ route, navigation }) {
                                             {t('Why?')}
                                         </Text>
                                     </>
+                                )}
+
+                                {/* ANSWER STATS */}
+                                {question.times_asked > 0 && (
+                                    <Text style={{ fontSize: 10, color: fw.is_correct ? 'rgba(255,255,255,0.8)' : COLORS.error, marginTop: 2, display: 'flex', width: '100%' }}>
+                                        {t('percentPicked').replace('{percent}', fw.times_picked ? Math.round((fw.times_picked / question.times_asked) * 100) : 0)}
+                                    </Text>
                                 )}
                             </Text>
                         </View>
