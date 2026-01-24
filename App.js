@@ -7,6 +7,7 @@ import { supabase } from './lib/supabase';
 
 // Screens
 import AuthScreen from './screens/AuthScreen';
+import OnboardingScreen from './screens/OnboardingScreen'; // [NEW]
 import HomeScreen from './screens/HomeScreen';
 import GameScreen from './screens/GameScreen';
 import AdminScreen from './screens/AdminScreen';
@@ -122,11 +123,18 @@ export default function App() {
 
           ) : (
             // Unauthenticated Stack
-            <Stack.Screen
-              name="Auth"
-              component={AuthScreen}
-              options={{ headerShown: false }}
-            />
+            <>
+              <Stack.Screen
+                name="Onboarding"
+                component={OnboardingScreen}
+                options={{ headerShown: false }}
+              />
+              <Stack.Screen
+                name="Auth"
+                component={AuthScreen}
+                options={{ headerShown: false }}
+              />
+            </>
           )}
         </Stack.Navigator>
       </NavigationContainer >

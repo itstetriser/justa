@@ -3,7 +3,8 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityInd
 import { supabase } from '../lib/supabase';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 
-export default function AuthScreen() {
+export default function AuthScreen({ route }) {
+    const { initialLevel } = route.params || {};
     const [loading, setLoading] = useState(false);
     const [isLogin, setIsLogin] = useState(true);
 
@@ -38,7 +39,10 @@ export default function AuthScreen() {
                 email: email,
                 password: password,
                 options: {
-                    data: { username: username }
+                    data: {
+                        username: username,
+                        current_level: initialLevel || 'A1' // [NEW] Save selected level
+                    }
                 }
             });
 
@@ -83,6 +87,14 @@ export default function AuthScreen() {
                     <Text style={styles.formTitle}>
                         {isLogin ? 'Welcome Back!' : 'Create Account'}
                     </Text>
+
+                    {/* Show selected level context if signing up */}
+                    {!isLogin && initialLevel && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20, backgroundColor: '#E3F2FD', padding: 10, borderRadius: 10 }}>
+                            <Text style={{ fontSize: 18, marginRight: 10 }}>🚀</Text>
+                            <Text style={{ color: COLORS.primary, fontWeight: 'bold' }}>Starting at Level {initialLevel}</Text>
+                        </View>
+                    )}
 
                     {/* Form Fields */}
                     {!isLogin && (
