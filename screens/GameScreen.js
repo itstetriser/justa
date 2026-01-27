@@ -58,7 +58,7 @@ export default function GameScreen({ route, navigation }) {
             // Ideally we reuse the robust logic from previous version, just adapting UI
             // For now, I'll copy the robust fetch logic:
 
-            let query = supabase.from('questions').select('*').ilike('level', level);
+            let query = supabase.from('questions').select('*, word_stats(word_text, times_picked)').ilike('level', level);
             if (category) query = query.eq('category', category);
 
             const { data: allQuestions } = await query;
@@ -129,13 +129,22 @@ export default function GameScreen({ route, navigation }) {
         const { data: { user } } = await supabase.auth.getUser();
 
         if (isRight) {
-            setIsCorrect(true);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             setSessionScore(prev => prev + 10);
+
+            // Check if ALL correct words are found
+            const totalCorrect = question.words.filter(w => w.is_correct).length;
+            const foundCorrect = newSelected.filter(w => w.status === 'correct').length;
+            if (foundCorrect >= totalCorrect) {
+                setIsCorrect(true);
+                if (user) {
+                    markQuestionCompleted(user.id, level, question.id, true);
+                }
+            }
+
             if (user) {
                 // Background updates
                 updateUserPointTransaction(user.id, 10);
-                markQuestionCompleted(user.id, level, question.id, true);
                 if (question.id) recordAnswerStats(question.id, wordObj.word_text, true, !statsRecorded);
             }
         } else {
@@ -161,6 +170,20 @@ export default function GameScreen({ route, navigation }) {
 
     // Split sentence
     const parts = question.sentence_en.split(/\[blank\]|\[_\]/);
+    const foundCorrectWords = selectedWords.filter(w => w.status === 'correct');
+
+    const getPickPercentage = (wordText) => {
+        const stat = question.word_stats?.find(s => s.word_text === wordText);
+        const count = stat ? stat.times_picked : 0;
+
+        let total = question.times_asked || 0;
+        if (!total && question.word_stats) {
+            total = question.word_stats.reduce((acc, s) => acc + s.times_picked, 0);
+        }
+
+        if (!total) return 0;
+        return Math.round((count / total) * 100);
+    };
 
     return (
         <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -190,35 +213,25 @@ export default function GameScreen({ route, navigation }) {
 
             {/* 2. Mascot & Card */}
             <View style={{ alignItems: 'center', marginBottom: 20 }}>
-                <Image
-                    source={require('../assets/squirrel.png')}
-                    style={{ width: 80, height: 80, resizeMode: 'contain', zIndex: 10, marginBottom: -25 }}
-                />
-                {/* Speech Bubble */}
-                <View style={[styles.speechBubble, { alignSelf: 'flex-end', marginRight: 40, marginBottom: 10 }]}>
-                    <Text style={{ fontSize: 12, color: '#555' }}>Fill the blank!</Text>
-                </View>
+
 
                 <View style={styles.questionCard}>
                     <Text style={styles.sentenceText}>
                         {parts[0]}
-                        <Text style={{ color: isCorrect ? COLORS.success : '#ccc', textDecorationLine: 'underline' }}>
-                            {isCorrect ? '  ' + (selectedWords.find(w => w.status === 'correct')?.word_text || '_____') + '  ' : ' _______ '}
+                        <Text style={{ color: foundCorrectWords.length > 0 ? COLORS.success : '#ccc', textDecorationLine: 'underline' }}>
+                            {foundCorrectWords.length > 0 ? '  ' + foundCorrectWords.map(w => w.word_text).join(' / ') + '  ' : ' _______ '}
                         </Text>
                         {parts[1]}
                     </Text>
 
-                    <Text style={styles.translationText}>
-                        ({question[`sentence_${userLang}`] || question.sentence_tr || "Translation unavailable"})
-                    </Text>
+                    {/* Removed Translation Text as per previous step */}
 
                     <View style={styles.divider} />
 
                     <View style={styles.footerRow}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                             <Text style={{ fontSize: 16, opacity: 0.5, marginRight: 5 }}>📚</Text>
-                            {/* Fallback if icon missing, just text */}
-                            <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#9CA3AF' }}>REMAINING: {question.words.filter(w => w.is_correct).length}</Text>
+                            <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#9CA3AF' }}>REMAINING: {question.words.filter(w => w.is_correct).length - foundCorrectWords.length}</Text>
                         </View>
                         <View style={{ flexDirection: 'row', gap: 3 }}>
                             {[1, 2, 3, 4].map(idx => (
@@ -233,15 +246,12 @@ export default function GameScreen({ route, navigation }) {
             <Text style={styles.sectionLabel}>CHOOSE THE CORRECT WORD</Text>
             <View style={styles.wordGrid}>
                 {question.words.map((w, i) => {
-                    // If correctly guessed, maybe hide it? Or disable.
-                    // The design usually keeps them but feedback appears below.
-                    // Let's keep them clickable unless isCorrect is true globally.
                     return (
                         <TouchableOpacity
                             key={i}
                             style={styles.wordBtn}
                             onPress={() => handleWordSelect(w)}
-                            disabled={isCorrect}
+                            disabled={isCorrect || selectedWords.some(sw => sw.id === w.id)}
                         >
                             <Text style={styles.wordBtnText}>{w.word_text}</Text>
                         </TouchableOpacity>
@@ -271,19 +281,53 @@ export default function GameScreen({ route, navigation }) {
                             ]}>
                                 <Text>{sw.status === 'correct' ? '✓' : '✕'}</Text>
                             </View>
-                            <Text style={{ marginLeft: 10, fontWeight: 'bold', color: '#1F2937' }}>
-                                {sw.word_text} {sw.status === 'correct' ? `: ${sw.translations?.[userLang] || 'Meanings'}` : '(Incorrect)'}
-                            </Text>
+                            <View style={{ marginLeft: 10, flex: 1 }}>
+                                <Text style={{ fontWeight: 'bold', color: '#1F2937' }}>
+                                    {sw.word_text}
+                                </Text>
+                                {/* Explanation / Translation Logic */}
+                                {sw.status === 'correct' ? (
+                                    <Text style={{ fontSize: 12, color: '#047857' }}>
+                                        {sw.translations?.[userLang] || sw.explanations?.[userLang] || "Correct!"}
+                                    </Text>
+                                ) : (
+                                    /* Incorrect + Premium Logic */
+                                    (isPremium) ? (
+                                        <Text style={{ fontSize: 12, color: '#B91C1C' }}>
+                                            {sw.explanations?.[userLang] || "Incorrect choice."}
+                                        </Text>
+                                    ) : (
+                                        <Text style={{ fontSize: 12, color: '#B91C1C' }}>
+                                            Incorrect
+                                        </Text>
+                                    )
+                                )}
+                            </View>
                         </View>
 
                         {sw.status === 'correct' && (
                             <View style={styles.percentBadge}>
-                                <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#065F46' }}>85% picked this</Text>
+                                <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#065F46' }}>{getPickPercentage(sw.word_text)}% picked this</Text>
                             </View>
                         )}
+
                         {sw.status === 'incorrect' && (
-                            <TouchableOpacity style={styles.whyBtn} onPress={() => Alert.alert("Explanation", "Need premium for AI explanation.")}>
-                                <Text style={{ fontSize: 10, color: '#4A90E2', fontWeight: 'bold' }}> Why is this wrong?</Text>
+                            <TouchableOpacity
+                                style={styles.whyBtn}
+                                onPress={() => {
+                                    if (isPremium) {
+                                        Alert.alert("Explanation", sw.explanations?.[userLang] || "No explanation available.");
+                                    } else {
+                                        Alert.alert("Go Premium", "Get unlimited explanations and more with Premium!", [
+                                            { text: "Cancel", style: "cancel" },
+                                            { text: "Upgrade", onPress: () => navigation.navigate('Paywall') } // Assuming Paywall screen exists or similar
+                                        ]);
+                                    }
+                                }}
+                            >
+                                <Text style={{ fontSize: 10, color: '#4A90E2', fontWeight: 'bold' }}>
+                                    {isPremium ? "Why is this wrong?" : "Unlock Explanation"}
+                                </Text>
                             </TouchableOpacity>
                         )}
                     </View>
@@ -306,11 +350,7 @@ const styles = StyleSheet.create({
     pointsPill: { backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#eee' },
     levelPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E0F2FE', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
 
-    // Mascot
-    speechBubble: {
-        backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12,
-        borderBottomLeftRadius: 0, ...SHADOWS.small
-    },
+
 
     // Card
     questionCard: {
