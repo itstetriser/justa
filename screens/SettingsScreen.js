@@ -1,17 +1,20 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Switch, Linking, Share } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 import { supabase } from '../lib/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import { resetUserPoints } from '../lib/api';
+import { getTranslation } from '../lib/translations'; // [NEW]
 
 const SUPPORTED_LANGS = [
-    { code: 'en', label: 'English', icon: '1F 1E' }, // Simplified icon logic
-    { code: 'tr', label: 'Türkçe', icon: '1F 1F' },
-    { code: 'es', label: 'Español', icon: '1F 1E' },
-    { code: 'fr', label: 'Français', icon: '1F 1F' },
-    { code: 'de', label: 'Deutsch', icon: '' },
-    { code: 'it', label: 'Italiano', icon: '' },
+    { code: 'en', label: 'English', icon: '🇺🇸' },
+    { code: 'tr', label: 'Türkçe', icon: '🇹🇷' },
+    { code: 'ja', label: '日本語', icon: '🇯🇵' },
+    { code: 'ko', label: '한국어', icon: '🇰🇷' },
+    { code: 'es', label: 'Español', icon: '🇪🇸' },
+    { code: 'fr', label: 'Français', icon: '🇫🇷' },
+    { code: 'pt', label: 'Português', icon: '🇵🇹' },
 ];
 
 export default function SettingsScreen({ navigation }) {
@@ -21,8 +24,10 @@ export default function SettingsScreen({ navigation }) {
     const [contentLang, setContentLang] = useState('es'); // Default per design
     const [version, setVersion] = useState("2.4.0 (Build 1042)");
 
+    const t = (key) => getTranslation(appLang, key); // [NEW]
+
     // Feature toggles
-    const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+
 
     useFocusEffect(
         useCallback(() => {
@@ -60,8 +65,8 @@ export default function SettingsScreen({ navigation }) {
 
     const handleResetProgress = () => {
         Alert.alert(
-            "Reset Progress",
-            "Are you sure you want to reset your score to 0? This cannot be undone.",
+            t('resetProgress'),
+            t('areYouSureReset'),
             [
                 { text: "Cancel", style: "cancel" },
                 {
@@ -72,8 +77,8 @@ export default function SettingsScreen({ navigation }) {
                             setLoading(true);
                             await resetUserPoints(profile.id);
                             await fetchSettings();
-                            Alert.alert("Success", "Progress reset.");
-                        } catch (e) { Alert.alert("Error", "Failed to reset."); }
+                            Alert.alert(t('success'), "Progress reset.");
+                        } catch (e) { Alert.alert(t('error'), "Failed to reset."); }
                         finally { setLoading(false); }
                     }
                 }
@@ -83,11 +88,11 @@ export default function SettingsScreen({ navigation }) {
 
     const handleDeleteAccount = () => {
         Alert.alert(
-            "Delete Account",
-            "This will permanently delete your account and all data. This action is irreversible.",
+            t('deleteAccount'),
+            t('deleteAccountDesc'),
             [
-                { text: "Cancel", style: "cancel" },
-                { text: "Delete Forever", style: "destructive", onPress: () => Alert.alert("Contact Support", "Please contact support@fillt.app to process account deletion.") }
+                { text: t('cancel'), style: "cancel" },
+                { text: t('deleteForever'), style: "destructive", onPress: () => Alert.alert(t('contactSupport'), t('contactSupportMsg')) }
             ]
         );
     };
@@ -99,7 +104,7 @@ export default function SettingsScreen({ navigation }) {
     const shareApp = async () => {
         try {
             await Share.share({
-                message: 'Check out Fillt! The best way to learn languages with fill-in-the-blank games. https://fillt.app',
+                message: t('shareMsg'),
             });
         } catch (error) {
             console.log(error.message);
@@ -141,9 +146,9 @@ export default function SettingsScreen({ navigation }) {
             {/* Header */}
             <View style={styles.header}>
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-                    <Text style={{ fontSize: 20 }}>←</Text>
+                    <Feather name="arrow-left" size={24} color={COLORS.slate[900]} />
                 </TouchableOpacity>
-                <Text style={styles.headerTitle}>Settings</Text>
+                <Text style={styles.headerTitle}>{t('profile')}</Text>
                 <View style={{ width: 44 }} />
             </View>
 
@@ -167,42 +172,22 @@ export default function SettingsScreen({ navigation }) {
 
                         <View style={styles.statsRow}>
                             <View style={styles.statItem}>
-                                <Text style={styles.statLabel}>Streak</Text>
+                                <Text style={styles.statLabel}>{t('streak')}</Text>
                                 <Text style={styles.statValue}>{profile.streak_count} 🔥</Text>
                             </View>
                             <View style={styles.statItem}>
-                                <Text style={styles.statLabel}>Daily Goal</Text>
+                                <Text style={styles.statLabel}>{t('dailyGoal')}</Text>
                                 <Text style={styles.statValue}>{profile.daily_goal} pts</Text>
                             </View>
                             <View style={styles.statItem}>
-                                <Text style={styles.statLabel}>Weekly</Text>
+                                <Text style={styles.statLabel}>{t('weekly')}</Text>
                                 <Text style={styles.statValue}>{profile.score_weekly}</Text>
                             </View>
                         </View>
                     </View>
                 )}
 
-                {/* 1. Notifications */}
-                <View style={styles.sectionHeader}>
-                    <View style={[styles.iconBox, { backgroundColor: '#F3E8FF' }]}>
-                        <Text style={{ color: '#9333EA' }}>🔔</Text>
-                    </View>
-                    <View>
-                        <Text style={styles.sectionTitle}>Notifications</Text>
-                        <Text style={styles.sectionDesc}>Manage your alerts</Text>
-                    </View>
-                </View>
-                <View style={styles.listContainer}>
-                    <View style={styles.listItem}>
-                        <Text style={styles.listItemText}>Daily Reminders</Text>
-                        <Switch
-                            trackColor={{ false: "#767577", true: COLORS.primary }}
-                            thumbColor={notificationsEnabled ? "#fff" : "#f4f3f4"}
-                            onValueChange={() => setNotificationsEnabled(!notificationsEnabled)}
-                            value={notificationsEnabled}
-                        />
-                    </View>
-                </View>
+
 
                 {/* 2. App Interface (Language) */}
                 <View style={[styles.sectionHeader, { marginTop: 30 }]}>
@@ -210,12 +195,12 @@ export default function SettingsScreen({ navigation }) {
                         <Text style={{ color: '#4A90E2' }}>📱</Text>
                     </View>
                     <View>
-                        <Text style={styles.sectionTitle}>App Interface</Text>
-                        <Text style={styles.sectionDesc}>Language for buttons & menus</Text>
+                        <Text style={styles.sectionTitle}>{t('appInterface')}</Text>
+                        <Text style={styles.sectionDesc}>{t('appInterfaceDesc')}</Text>
                     </View>
                 </View>
                 <View style={styles.grid}>
-                    {SUPPORTED_LANGS.slice(0, 4).map(l => renderOption(l, appLang, 'app_lang'))}
+                    {SUPPORTED_LANGS.map(l => renderOption(l, appLang, 'app_lang'))}
                 </View>
 
                 {/* 3. Content Language */}
@@ -224,12 +209,12 @@ export default function SettingsScreen({ navigation }) {
                         <Text style={{ color: '#2E7D32' }}>📖</Text>
                     </View>
                     <View>
-                        <Text style={styles.sectionTitle}>Content & Explanations</Text>
-                        <Text style={styles.sectionDesc}>Language for definitions & errors</Text>
+                        <Text style={styles.sectionTitle}>{t('contentLanguage')}</Text>
+                        <Text style={styles.sectionDesc}>{t('contentLanguageDesc')}</Text>
                     </View>
                 </View>
                 <View style={styles.grid}>
-                    {SUPPORTED_LANGS.slice(0, 4).map(l => renderOption(l, contentLang, 'native_lang'))}
+                    {SUPPORTED_LANGS.map(l => renderOption(l, contentLang, 'native_lang'))}
                 </View>
 
                 {/* 4. Support & Social */}
@@ -238,22 +223,22 @@ export default function SettingsScreen({ navigation }) {
                         <Text style={{ color: '#EA580C' }}>🤝</Text>
                     </View>
                     <View>
-                        <Text style={styles.sectionTitle}>Support & Community</Text>
+                        <Text style={styles.sectionTitle}>{t('supportCommunity')}</Text>
                     </View>
                 </View>
                 <View style={styles.listContainer}>
                     <TouchableOpacity style={styles.listItem} onPress={shareApp}>
-                        <Text style={styles.listItemText}>Share App</Text>
+                        <Text style={styles.listItemText}>{t('shareApp')}</Text>
                         <Text style={{ color: COLORS.slate[400] }}>→</Text>
                     </TouchableOpacity>
                     <View style={styles.divider} />
                     <TouchableOpacity style={styles.listItem} onPress={() => openLink('https://fillt.app/privacy')}>
-                        <Text style={styles.listItemText}>Privacy Policy</Text>
+                        <Text style={styles.listItemText}>{t('privacyPolicy')}</Text>
                         <Text style={{ color: COLORS.slate[400] }}>→</Text>
                     </TouchableOpacity>
                     <View style={styles.divider} />
                     <TouchableOpacity style={styles.listItem} onPress={() => openLink('mailto:support@fillt.app')}>
-                        <Text style={styles.listItemText}>Contact Support</Text>
+                        <Text style={styles.listItemText}>{t('contactSupport')}</Text>
                         <Text style={{ color: COLORS.slate[400] }}>→</Text>
                     </TouchableOpacity>
                 </View>
@@ -264,20 +249,20 @@ export default function SettingsScreen({ navigation }) {
                         <Text style={{ color: '#DC2626' }}>⚙️</Text>
                     </View>
                     <View>
-                        <Text style={styles.sectionTitle}>Account</Text>
+                        <Text style={styles.sectionTitle}>{t('account')}</Text>
                     </View>
                 </View>
                 <View style={styles.listContainer}>
                     <TouchableOpacity style={styles.listItem} onPress={handleResetProgress}>
-                        <Text style={[styles.listItemText, { color: '#DC2626' }]}>Reset Progress</Text>
+                        <Text style={[styles.listItemText, { color: '#DC2626' }]}>{t('resetProgress')}</Text>
                     </TouchableOpacity>
                     <View style={styles.divider} />
                     <TouchableOpacity style={styles.listItem} onPress={handleDeleteAccount}>
-                        <Text style={[styles.listItemText, { color: '#DC2626' }]}>Delete Account</Text>
+                        <Text style={[styles.listItemText, { color: '#DC2626' }]}>{t('deleteAccount')}</Text>
                     </TouchableOpacity>
                     <View style={styles.divider} />
                     <TouchableOpacity style={styles.listItem} onPress={signOut}>
-                        <Text style={[styles.listItemText, { color: '#DC2626', fontWeight: 'bold' }]}>Sign Out</Text>
+                        <Text style={[styles.listItemText, { color: '#DC2626', fontWeight: 'bold' }]}>{t('signOut')}</Text>
                     </TouchableOpacity>
                 </View>
 

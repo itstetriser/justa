@@ -1,11 +1,12 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Vibration, LayoutAnimation, Platform, UIManager, Alert, ScrollView, Modal, Animated, Easing, Image, Dimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Vibration, LayoutAnimation, Platform, UIManager, Alert, ScrollView, Modal, Animated, Easing, Image, TextInput, Dimensions } from 'react-native';
+import { FontAwesome5 } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { getTranslation } from '../lib/translations';
-import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake, markQuestionCompleted, recordAnswerStats, toggleSavedQuestion } from '../lib/api';
+import { fetchUserLevelProgress, markQuestionSeen, toggleQuestionFavorite, recordQuestionMistake, updateUserPointTransaction, updateUserStreak, resetLevelProgress, resolveQuestionMistake, markQuestionCompleted, recordAnswerStats, submitQuestionReport } from '../lib/api';
 import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 
 if (
@@ -19,7 +20,7 @@ const screenWidth = Dimensions.get('window').width;
 
 export default function GameScreen({ route, navigation }) {
     // Params
-    const { level, category, appLang, userLang, isPremium, gameMode: initialGameMode } = route.params || {};
+    const { level, category, appLang, userLang, isPremium, gameMode: initialGameMode, isHardMode = false } = route.params || {};
 
     // State
     const [gameMode, setGameMode] = useState(initialGameMode || 'NEW');
@@ -30,8 +31,147 @@ export default function GameScreen({ route, navigation }) {
     const [sessionScore, setSessionScore] = useState(0);
     const [showPremiumModal, setShowPremiumModal] = useState(false);
     const [showWinModal, setShowWinModal] = useState(false);
+    const [mistakesInCurrent, setMistakesInCurrent] = useState(0);
 
-    // Stats tracking for session
+    // Report State
+    const [showReportModal, setShowReportModal] = useState(false);
+    const [reportTopic, setReportTopic] = useState('');
+    const [reportMessage, setReportMessage] = useState('');
+    const [submittingReport, setSubmittingReport] = useState(false);
+
+    // Animation for Pulsing Blank
+    const blankOpacity = React.useRef(new Animated.Value(0.4)).current;
+
+    React.useEffect(() => {
+        Animated.loop(
+            Animated.sequence([
+                Animated.timing(blankOpacity, {
+                    toValue: 1,
+                    duration: 800,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(blankOpacity, {
+                    toValue: 0.4,
+                    duration: 800,
+                    useNativeDriver: true,
+                }),
+            ])
+        ).start();
+    }, []);
+    const [reportSuccess, setReportSuccess] = useState(false);
+
+
+    // ... (existing code) ...
+
+    const handleReportSubmit = async () => {
+        if (!reportTopic) {
+            Alert.alert("Topic Required", "Please select a topic.");
+            return;
+        }
+        setSubmittingReport(true);
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && question?.id) {
+                await submitQuestionReport(user.id, question.id, reportTopic, reportMessage);
+                console.log("Report sent successfully.");
+                setReportSuccess(true);
+                // Reset form data but keep modal open to show success
+                setReportTopic('');
+                setReportMessage('');
+            }
+        } catch (e) {
+            Alert.alert("Error", "Failed to send report. Please try again.");
+        } finally {
+            setSubmittingReport(false);
+        }
+    };
+
+    const closeReportModal = () => {
+        setShowReportModal(false);
+        setReportSuccess(false);
+        setReportTopic('');
+        setReportMessage('');
+    };
+
+    // ... (render) ...
+
+    {/* Report Modal */ }
+    <Modal
+        visible={showReportModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={closeReportModal}
+    >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: '85%', maxWidth: 400, backgroundColor: '#fff', borderRadius: 20, padding: 25, ...SHADOWS.large }}>
+
+                <View>
+                    <Text style={{ fontSize: 22, fontWeight: 'bold', marginBottom: 20, color: COLORS.slate[800], textAlign: 'center' }}>
+                        Report Issue
+                    </Text>
+
+                    <Text style={{ marginBottom: 10, fontWeight: '600', color: COLORS.slate[600] }}>Select Topic:</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 }}>
+                        {['Spelling', 'Grammar', 'Translation', 'Other'].map(topic => (
+                            <TouchableOpacity
+                                key={topic}
+                                style={{
+                                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+                                    backgroundColor: reportTopic === topic ? COLORS.primary : COLORS.slate[100],
+                                }}
+                                onPress={() => !reportSuccess && setReportTopic(topic)}
+                                disabled={reportSuccess}
+                            >
+                                <Text style={{ color: reportTopic === topic ? '#fff' : COLORS.slate[700], fontWeight: '500' }}>{topic}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+
+                    <Text style={{ marginBottom: 10, fontWeight: '600', color: COLORS.slate[600] }}>Explanation (Optional):</Text>
+                    <TextInput
+                        style={{
+                            backgroundColor: COLORS.slate[50], borderRadius: 10, padding: 12, height: 80,
+                            textAlignVertical: 'top', borderWidth: 1, borderColor: COLORS.slate[200], marginBottom: 20
+                        }}
+                        placeholder="Describe the issue..."
+                        multiline
+                        value={reportMessage}
+                        onChangeText={setReportMessage}
+                        editable={!reportSuccess}
+                    />
+
+                    {reportSuccess ? (
+                        <View style={{ width: '100%', alignItems: 'center' }}>
+                            <TouchableOpacity
+                                style={{ width: '100%', paddingVertical: 15, borderRadius: 12, backgroundColor: COLORS.success, alignItems: 'center', marginBottom: 10 }}
+                                disabled={true}
+                            >
+                                <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Report Sent</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity onPress={closeReportModal} style={{ marginTop: 5, padding: 10, alignItems: 'center' }}>
+                                <Text style={{ color: COLORS.primary, fontSize: 16, fontWeight: '600' }}>Close</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : (
+                        <>
+                            <TouchableOpacity
+                                style={{ width: '100%', paddingVertical: 15, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center', marginBottom: 10 }}
+                                onPress={handleReportSubmit}
+                                disabled={submittingReport}
+                            >
+                                {submittingReport ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Send Report</Text>}
+                            </TouchableOpacity>
+
+                            <TouchableOpacity onPress={closeReportModal} style={{ marginTop: 5, padding: 10, alignItems: 'center' }}>
+                                <Text style={{ color: '#999', fontSize: 14 }}>Cancel</Text>
+                            </TouchableOpacity>
+                        </>
+                    )}
+                </View>
+            </View>
+        </View>
+    </Modal>
     const [statsRecorded, setStatsRecorded] = useState(false);
 
     // Helpers
@@ -41,7 +181,7 @@ export default function GameScreen({ route, navigation }) {
         useCallback(() => {
             fetchQuestion();
             setSessionScore(0);
-        }, [gameMode])
+        }, [gameMode, level, category])
     );
 
     const fetchQuestion = async () => {
@@ -51,6 +191,7 @@ export default function GameScreen({ route, navigation }) {
             setSelectedWords([]);
             setShowWinModal(false);
             setStatsRecorded(false);
+            setMistakesInCurrent(0);
 
             const { data: { user } } = await supabase.auth.getUser();
 
@@ -117,7 +258,7 @@ export default function GameScreen({ route, navigation }) {
     };
 
     const handleWordSelect = async (wordObj) => {
-        if (!question || isCorrect) return;
+        if (!question) return;
 
         // If validation logic...
         const isRight = wordObj.is_correct;
@@ -130,7 +271,11 @@ export default function GameScreen({ route, navigation }) {
 
         if (isRight) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            setSessionScore(prev => prev + 10);
+
+            // Only add points if not already won (though technically correct words are disabled after selection anyway)
+            if (!isCorrect) {
+                setSessionScore(prev => prev + 10);
+            }
 
             // Check if ALL correct words are found
             const totalCorrect = question.words.filter(w => w.is_correct).length;
@@ -142,29 +287,53 @@ export default function GameScreen({ route, navigation }) {
                 }
             }
 
-            if (user) {
+            if (user && !isCorrect) {
                 // Background updates
                 updateUserPointTransaction(user.id, 10);
-                if (question.id) recordAnswerStats(question.id, wordObj.word_text, true, !statsRecorded);
+                // Only record stats if game was NOT already won (though UI blocks this, good safety)
+                if (question.id && !isCorrect) recordAnswerStats(question.id, wordObj.word_text, true, !statsRecorded);
             }
         } else {
-            // Wrong
+            // WRONG ANSWER
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-            setSessionScore(prev => Math.max(0, prev - 5));
-            if (user) {
-                recordQuestionMistake(user.id, level, question.id);
-                if (question.id) recordAnswerStats(question.id, wordObj.word_text, false, !statsRecorded);
+
+            const currentMistakeCount = mistakesInCurrent + 1;
+            setMistakesInCurrent(currentMistakeCount);
+
+            // Only penalty if game NOT won yet
+            if (!isCorrect) {
+                // HARD MODE: Strict. Every mistake counts.
+                // EASY MODE: 1 Foregiveness. 
+                const shouldPenalize = isHardMode ? true : (currentMistakeCount > 1);
+
+                if (shouldPenalize) {
+                    setSessionScore(prev => Math.max(0, prev - 5));
+                    if (user) {
+                        recordQuestionMistake(user.id, level, question.id);
+                        if (question.id) recordAnswerStats(question.id, wordObj.word_text, false, !statsRecorded);
+                    }
+                    setStatsRecorded(true);
+                } else {
+                    // Start of Easy Mode Forgiveness logic
+                    // We do NOT record mistake, do NOT deduct points.
+                    // But we still record stats for the word itself (that many people picked it wrong)?
+                    // User said "ignore that". Let's assume full ignore for user progress, but maybe still good to record stats?
+                    // "mark it as mistaken" vs "ignore". 
+                    // Let's strictly follow: "ignore that". So no DB calls.
+                }
             }
         }
-        setStatsRecorded(true);
+        // Logic note: isHardMode ? always record : record if > 1.
     };
 
     const toggleHeart = async () => {
         if (!question) return;
         setQuestion(prev => ({ ...prev, isFavorite: !prev.isFavorite }));
         const { data: { user } } = await supabase.auth.getUser();
-        toggleSavedQuestion(user.id, question.id);
+        await toggleQuestionFavorite(user.id, level, question.id);
     };
+
+
 
     if (loading || !question) return <View style={styles.center}><ActivityIndicator color={COLORS.primary} /></View>;
 
@@ -188,27 +357,49 @@ export default function GameScreen({ route, navigation }) {
     return (
         <ScrollView style={styles.container} contentContainerStyle={styles.content}>
 
+
+
             {/* 1. Header */}
             <View style={styles.header}>
                 <TouchableOpacity onPress={() => navigation.goBack()} style={styles.roundBtn}>
-                    <Text style={{ fontSize: 20 }}>←</Text>
+                    <FontAwesome5 name="arrow-left" size={20} color={COLORS.slate[800]} />
                 </TouchableOpacity>
 
                 <View style={styles.pillContainer}>
                     <View style={styles.pointsPill}>
-                        <Text style={{ fontSize: 14 }}>✨ {sessionScore}</Text>
-                    </View>
-                    <View style={styles.levelPill}>
-                        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#4A90E2', marginRight: 5 }} />
-                        <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#4A90E2' }}>LEVEL: {level}</Text>
+                        <Text style={{ fontSize: 14, fontWeight: '600', color: COLORS.slate[800] }}>Score: {sessionScore}</Text>
                     </View>
                 </View>
 
-                <TouchableOpacity onPress={toggleHeart} style={styles.roundBtn}>
-                    <Text style={{ fontSize: 18, color: question.isFavorite ? COLORS.error : '#999' }}>
-                        {question.isFavorite ? '❤️' : '♡'}
-                    </Text>
-                </TouchableOpacity>
+                {/* Right Side: Report + Heart */}
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity onPress={() => setShowReportModal(true)} style={styles.roundBtn}>
+                        <FontAwesome5 name="flag" size={18} color={COLORS.slate[800]} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={toggleHeart} style={styles.roundBtn}>
+                        <FontAwesome5
+                            name="star"
+                            size={18}
+                            solid={question.isFavorite}
+                            color={question.isFavorite ? COLORS.secondary : COLORS.slate[400]}
+                        />
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            {/* Progress Bar */}
+            <View style={{ width: '100%', height: 6, backgroundColor: '#E5E7EB', borderRadius: 3, marginBottom: 20, overflow: 'hidden' }}>
+                <View style={{
+                    width: `${Math.min(((foundCorrectWords.length) / (question.words.filter(w => w.is_correct).length)) * 100, 100)}%`,
+                    height: '100%',
+                    backgroundColor: COLORS.primary,
+                    borderRadius: 3
+                }} />
+            </View>
+            <View style={{ alignItems: 'center', marginTop: -15, marginBottom: 15 }}>
+                <Text style={{ fontSize: 12, color: COLORS.slate[500], fontWeight: '600' }}>
+                    {question.words.filter(w => w.is_correct).length - foundCorrectWords.length} words left
+                </Text>
             </View>
 
             {/* 2. Mascot & Card */}
@@ -218,9 +409,16 @@ export default function GameScreen({ route, navigation }) {
                 <View style={styles.questionCard}>
                     <Text style={styles.sentenceText}>
                         {parts[0]}
-                        <Text style={{ color: foundCorrectWords.length > 0 ? COLORS.success : '#ccc', textDecorationLine: 'underline' }}>
-                            {foundCorrectWords.length > 0 ? '  ' + foundCorrectWords.map(w => w.word_text).join(' / ') + '  ' : ' _______ '}
-                        </Text>
+                        {foundCorrectWords.length > 0 ? (
+                            <Text style={{ color: COLORS.success, textDecorationLine: 'underline', fontWeight: 'bold' }}>
+                                {foundCorrectWords[foundCorrectWords.length - 1].word_text}
+                            </Text>
+                        ) : (
+                            // Pulsing Blank
+                            <Animated.Text style={{ opacity: blankOpacity, color: COLORS.primary, fontWeight: '900' }}>
+                                {' _______ '}
+                            </Animated.Text>
+                        )}
                         {parts[1]}
                     </Text>
 
@@ -229,31 +427,32 @@ export default function GameScreen({ route, navigation }) {
                     <View style={styles.divider} />
 
                     <View style={styles.footerRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <Text style={{ fontSize: 16, opacity: 0.5, marginRight: 5 }}>📚</Text>
-                            <Text style={{ fontSize: 12, fontWeight: 'bold', color: '#9CA3AF' }}>REMAINING: {question.words.filter(w => w.is_correct).length - foundCorrectWords.length}</Text>
-                        </View>
-                        <View style={{ flexDirection: 'row', gap: 3 }}>
-                            {[1, 2, 3, 4].map(idx => (
-                                <View key={idx} style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#D1D5DB' }} />
-                            ))}
+                        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+                            {/* Removed text based remaining count */}
                         </View>
                     </View>
                 </View>
             </View>
 
             {/* 3. Word Choices */}
-            <Text style={styles.sectionLabel}>CHOOSE THE CORRECT WORD</Text>
+            <Text style={styles.sectionLabel}>Choose all the correct words to complete the sentence</Text>
             <View style={styles.wordGrid}>
                 {question.words.map((w, i) => {
+                    const isSelected = selectedWords.some(sw => sw.id === w.id);
                     return (
                         <TouchableOpacity
                             key={i}
-                            style={styles.wordBtn}
+                            style={[
+                                styles.wordBtn,
+                                isSelected && { backgroundColor: '#F3F4F6', borderColor: '#E5E7EB', opacity: 0.6 }
+                            ]}
                             onPress={() => handleWordSelect(w)}
-                            disabled={isCorrect || selectedWords.some(sw => sw.id === w.id)}
+                            disabled={isSelected}
                         >
-                            <Text style={styles.wordBtnText}>{w.word_text}</Text>
+                            <Text style={[
+                                styles.wordBtnText,
+                                isSelected && { color: '#9CA3AF' }
+                            ]}>{w.word_text}</Text>
                         </TouchableOpacity>
                     )
                 })}
@@ -269,12 +468,12 @@ export default function GameScreen({ route, navigation }) {
                 )}
 
                 {/* History Items */}
-                {[...selectedWords].reverse().map((sw, idx) => (
-                    <View key={idx} style={[
+                {selectedWords.slice().reverse().map((sw) => (
+                    <View key={sw.id || sw.word_text} style={[
                         styles.feedbackCard,
                         sw.status === 'correct' ? styles.feedbackSuccess : styles.feedbackError
                     ]}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 }}>
                             <View style={[
                                 styles.feedbackIcon,
                                 { backgroundColor: sw.status === 'correct' ? '#D1FAE5' : '#FEE2E2' }
@@ -288,52 +487,138 @@ export default function GameScreen({ route, navigation }) {
                                 {/* Explanation / Translation Logic */}
                                 {sw.status === 'correct' ? (
                                     <Text style={{ fontSize: 12, color: '#047857' }}>
-                                        {sw.translations?.[userLang] || sw.explanations?.[userLang] || "Correct!"}
+                                        {(() => {
+                                            const text = sw.translations?.[userLang] || sw.explanations?.[userLang] || "Correct!";
+                                            return text.split(/\/ul\/(.*?)\/ul\//g).map((part, index) =>
+                                                index % 2 === 1 ?
+                                                    <Text key={index} style={{ textDecorationLine: 'underline' }}>{part}</Text> :
+                                                    <Text key={index}>{part}</Text>
+                                            );
+                                        })()}
                                     </Text>
                                 ) : (
                                     /* Incorrect + Premium Logic */
                                     (isPremium) ? (
                                         <Text style={{ fontSize: 12, color: '#B91C1C' }}>
-                                            {sw.explanations?.[userLang] || "Incorrect choice."}
+                                            {(() => {
+                                                const text = sw.explanations?.[userLang] || "Incorrect choice.";
+                                                return text.split(/\/ul\/(.*?)\/ul\//g).map((part, index) =>
+                                                    index % 2 === 1 ?
+                                                        <Text key={index} style={{ textDecorationLine: 'underline' }}>{part}</Text> :
+                                                        <Text key={index}>{part}</Text>
+                                                );
+                                            })()}
                                         </Text>
                                     ) : (
-                                        <Text style={{ fontSize: 12, color: '#B91C1C' }}>
-                                            Incorrect
-                                        </Text>
+                                        <TouchableOpacity onPress={() => setShowPremiumModal(true)}>
+                                            <Text style={{ fontSize: 12, color: '#B91C1C', textDecorationLine: 'underline', fontWeight: '600' }}>
+                                                Incorrect. Why? 🔒
+                                            </Text>
+                                        </TouchableOpacity>
                                     )
                                 )}
                             </View>
                         </View>
 
-                        {sw.status === 'correct' && (
+                        {/* Right Side Actions */}
+                        <View style={{ alignItems: 'flex-end', gap: 5 }}>
                             <View style={styles.percentBadge}>
                                 <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#065F46' }}>{getPickPercentage(sw.word_text)}% picked this</Text>
                             </View>
-                        )}
-
-                        {sw.status === 'incorrect' && (
-                            <TouchableOpacity
-                                style={styles.whyBtn}
-                                onPress={() => {
-                                    if (isPremium) {
-                                        Alert.alert("Explanation", sw.explanations?.[userLang] || "No explanation available.");
-                                    } else {
-                                        Alert.alert("Go Premium", "Get unlimited explanations and more with Premium!", [
-                                            { text: "Cancel", style: "cancel" },
-                                            { text: "Upgrade", onPress: () => navigation.navigate('Paywall') } // Assuming Paywall screen exists or similar
-                                        ]);
-                                    }
-                                }}
-                            >
-                                <Text style={{ fontSize: 10, color: '#4A90E2', fontWeight: 'bold' }}>
-                                    {isPremium ? "Why is this wrong?" : "Unlock Explanation"}
-                                </Text>
-                            </TouchableOpacity>
-                        )}
+                        </View>
                     </View>
                 ))}
             </View>
 
+            {/* Premium Upsell Modal */}
+            <Modal
+                visible={showPremiumModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowPremiumModal(false)}
+            >
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+                    <View style={{ width: '85%', maxWidth: 400, backgroundColor: '#fff', borderRadius: 20, padding: 25, alignItems: 'center', ...SHADOWS.large }}>
+                        <Text style={{ fontSize: 40, marginBottom: 15 }}>💎</Text>
+                        <Text style={{ fontSize: 22, fontWeight: 'bold', marginBottom: 10, textAlign: 'center', color: COLORS.slate[800] }}>
+                            Unlock Full Explanations
+                        </Text>
+                        <Text style={{ textAlign: 'center', marginBottom: 20, color: '#666', lineHeight: 22 }}>
+                            Understand your mistakes with detailed grammar explanations and translations. Go Pro to master the language faster!
+                        </Text>
+
+                        <TouchableOpacity
+                            style={{ width: '100%', paddingVertical: 15, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center', marginBottom: 10 }}
+                            onPress={() => {
+                                setShowPremiumModal(false);
+                                navigation.navigate('Paywall'); // Ensure Paywall route exists
+                            }}
+                        >
+                            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Upgrade to Pro</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity onPress={() => setShowPremiumModal(false)} style={{ marginTop: 10, padding: 10 }}>
+                            <Text style={{ color: '#999', fontSize: 14 }}>Maybe Later</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Report Modal */}
+            <Modal
+                visible={showReportModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowReportModal(false)}
+            >
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+                    <View style={{ width: '85%', maxWidth: 400, backgroundColor: '#fff', borderRadius: 20, padding: 25, ...SHADOWS.large }}>
+                        <Text style={{ fontSize: 22, fontWeight: 'bold', marginBottom: 20, color: COLORS.slate[800], textAlign: 'center' }}>
+                            Report Issue
+                        </Text>
+
+                        <Text style={{ marginBottom: 10, fontWeight: '600', color: COLORS.slate[600] }}>Select Topic:</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 }}>
+                            {['Spelling', 'Grammar', 'Translation', 'Other'].map(topic => (
+                                <TouchableOpacity
+                                    key={topic}
+                                    style={{
+                                        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+                                        backgroundColor: reportTopic === topic ? COLORS.primary : COLORS.slate[100],
+                                    }}
+                                    onPress={() => setReportTopic(topic)}
+                                >
+                                    <Text style={{ color: reportTopic === topic ? '#fff' : COLORS.slate[700], fontWeight: '500' }}>{topic}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+
+                        <Text style={{ marginBottom: 10, fontWeight: '600', color: COLORS.slate[600] }}>Explanation (Optional):</Text>
+                        <TextInput
+                            style={{
+                                backgroundColor: COLORS.slate[50], borderRadius: 10, padding: 12, height: 80,
+                                textAlignVertical: 'top', borderWidth: 1, borderColor: COLORS.slate[200], marginBottom: 20
+                            }}
+                            placeholder="Describe the issue..."
+                            multiline
+                            value={reportMessage}
+                            onChangeText={setReportMessage}
+                        />
+
+                        <TouchableOpacity
+                            style={{ width: '100%', paddingVertical: 15, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center', marginBottom: 10 }}
+                            onPress={handleReportSubmit}
+                            disabled={submittingReport}
+                        >
+                            {submittingReport ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Send Report</Text>}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity onPress={() => setShowReportModal(false)} style={{ marginTop: 5, padding: 10, alignItems: 'center' }}>
+                            <Text style={{ color: '#999', fontSize: 14 }}>Cancel</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
         </ScrollView>
     );
 }
@@ -341,14 +626,20 @@ export default function GameScreen({ route, navigation }) {
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#F0F4F8' },
     center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    content: { padding: 20, paddingTop: 50, paddingBottom: 50 },
+    content: {
+        padding: 20,
+        paddingTop: 50,
+        paddingBottom: 50,
+        width: '100%',
+        maxWidth: 600,
+        alignSelf: 'center'
+    },
 
     // Header
     header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
     roundBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', ...SHADOWS.small },
     pillContainer: { flexDirection: 'row', gap: 10 },
     pointsPill: { backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#eee' },
-    levelPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E0F2FE', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
 
 
 
@@ -363,13 +654,14 @@ const styles = StyleSheet.create({
     footerRow: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
 
     // Word Grid
+    // Word Grid
     sectionLabel: { fontSize: 12, fontWeight: 'bold', color: '#9CA3AF', marginBottom: 15, marginLeft: 5, letterSpacing: 1 },
-    wordGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
+    wordGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, width: '100%', justifyContent: 'center' }, // [CHANGED] Row Wrap
     wordBtn: {
         backgroundColor: '#fff', paddingVertical: 15, paddingHorizontal: 25, borderRadius: 16,
-        minWidth: '45%', alignItems: 'center', ...SHADOWS.small, borderWidth: 1, borderColor: '#fff'
+        minWidth: 100, alignItems: 'center', ...SHADOWS.small, borderWidth: 1, borderColor: '#fff'
     },
-    wordBtnText: { fontSize: 18, fontWeight: 'bold', color: '#374151' },
+    wordBtnText: { fontSize: 16, fontWeight: '600', color: '#374151' },
 
     // Feedback
     nextBtn: { backgroundColor: COLORS.primary, padding: 15, borderRadius: 15, alignItems: 'center', marginBottom: 10, ...SHADOWS.medium },

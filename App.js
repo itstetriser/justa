@@ -2,12 +2,19 @@
 import React, { useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+
 import { ActivityIndicator, View } from 'react-native';
 import { supabase } from './lib/supabase';
+import { Feather } from '@expo/vector-icons';
+import { COLORS } from './lib/theme';
+import { useQuery } from '@tanstack/react-query'; // [NEW] - Ensure useQuery is imported
+import { fetchUserProfile } from './lib/api'; // [NEW]
+import { getTranslation } from './lib/translations'; // [NEW]
+import { useFonts } from 'expo-font'; // [NEW]
 
 // Screens
 import AuthScreen from './screens/AuthScreen';
-import OnboardingScreen from './screens/OnboardingScreen'; // [NEW]
+import OnboardingScreen from './screens/OnboardingScreen';
 import HomeScreen from './screens/HomeScreen';
 import GameScreen from './screens/GameScreen';
 import AdminScreen from './screens/AdminScreen';
@@ -24,26 +31,37 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const queryClient = new QueryClient();
 const Stack = createNativeStackNavigator();
 
+
 // Deep Linking Config
 const linking = {
   prefixes: ['justablank://'],
   config: {
     screens: {
       Home: 'home',
+      Stats: 'stats',
+      Profile: 'profile',
     },
   },
 };
 
 
+
 export default function App() {
   const [session, setSession] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const [fontsLoaded] = useFonts({
+    'Satoshi-Regular': require('./assets/fonts/Satoshi-Regular.otf'),
+    'Satoshi-Bold': require('./assets/fonts/Satoshi-Bold.otf'),
+    'Satoshi-Medium': require('./assets/fonts/Satoshi-Medium.otf'),
+    'Satoshi-Black': require('./assets/fonts/Satoshi-Black.otf'),
+  });
 
   useEffect(() => {
     // Check initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      setLoading(false);
+      setAuthLoading(false);
     });
 
     // Listen for auth changes
@@ -54,7 +72,7 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (loading) {
+  if (authLoading || !fontsLoaded) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" />
@@ -72,7 +90,17 @@ export default function App() {
               <Stack.Screen
                 name="Home"
                 component={HomeScreen}
-                options={{ title: 'JustABlank' }}
+                options={{ headerShown: false }}
+              />
+              <Stack.Screen
+                name="Stats"
+                component={StatisticsScreen}
+                options={{ headerShown: false }}
+              />
+              <Stack.Screen
+                name="Profile"
+                component={SettingsScreen}
+                options={{ headerShown: false }}
               />
               <Stack.Screen
                 name="Game"
@@ -109,16 +137,7 @@ export default function App() {
                 component={BulkAddScreen}
                 options={{ headerShown: false }}
               />
-              <Stack.Screen
-                name="Settings"
-                component={SettingsScreen}
-                options={{ headerShown: false }}
-              />
-              <Stack.Screen
-                name="Statistics"
-                component={StatisticsScreen}
-                options={{ headerShown: false }}
-              />
+
             </>
 
           ) : (
