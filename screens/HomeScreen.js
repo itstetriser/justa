@@ -215,7 +215,7 @@ export default function HomeScreen({ navigation }) {
 
     // Other Levels list
     const allLevels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
-    const otherLevels = allLevels.filter(l => l !== currentLevel).slice(0, 3); // Showing 3 as per design
+    const otherLevels = allLevels.filter(l => l !== currentLevel); // Show all others
 
     return (
         <View style={styles.container}>
@@ -285,7 +285,11 @@ export default function HomeScreen({ navigation }) {
 
                 {/* Other Levels */}
                 <ThemedText style={styles.sectionTitle} weight="medium">{t('otherLevels') || 'Other levels'}</ThemedText>
-                <View style={styles.levelsContainer}>
+                <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.levelsContainer}
+                >
                     {otherLevels.map((lvl) => (
                         <TouchableOpacity
                             key={lvl}
@@ -294,11 +298,10 @@ export default function HomeScreen({ navigation }) {
                         >
                             <View style={styles.levelCircleItem}>
                                 <ThemedText style={styles.levelCircleLabel} weight="bold">{lvl}</ThemedText>
-                                <FontAwesome5 name={LEVEL_THEMES[lvl]?.icon || 'seedling'} size={24} color={COLORS.secondary} />
                             </View>
                         </TouchableOpacity>
                     ))}
-                </View>
+                </ScrollView>
 
                 {/* Statistics */}
                 <ThemedText style={styles.sectionTitle} weight="medium">{t('statistics') || 'Statistics'}</ThemedText>
@@ -506,9 +509,9 @@ const styles = StyleSheet.create({
     // Levels (Circular)
     levelsContainer: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
         marginBottom: 32,
         gap: 16,
+        paddingRight: 24, // Padding for end of scroll
     },
     levelCircleWrapper: {
         alignItems: 'center',
@@ -526,8 +529,7 @@ const styles = StyleSheet.create({
         ...SHADOWS.small,
     },
     levelCircleLabel: {
-        fontSize: 16,
-        marginBottom: 4,
+        fontSize: 24, // Increased size
         color: COLORS.textMain,
     },
 
