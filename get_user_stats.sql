@@ -13,9 +13,14 @@ declare
   v_words_seen int;
 begin
   -- 1. Get all seen question IDs across all levels
-  -- user_level_progress has seen_ids array. We need to unnest them.
+  -- Safe check: Ensure seen_ids is actually an array before trying to expand it
   with all_seen as (
-    select distinct jsonb_array_elements_text(seen_ids)::uuid as q_id
+    select distinct jsonb_array_elements_text(
+        case 
+            when jsonb_typeof(seen_ids) = 'array' then seen_ids 
+            else '[]'::jsonb 
+        end
+    )::uuid as q_id
     from public.user_level_progress
     where user_id = p_user_id
   )

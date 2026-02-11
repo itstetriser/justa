@@ -62,6 +62,13 @@ export default function App() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthLoading(false);
+    }).catch(async (err) => {
+      console.warn("Auth initialization error:", err);
+      // If the refresh token is invalid, sign out to clear it from storage
+      if (err.message && (err.message.includes("Invalid Refresh Token") || err.message.includes("Refresh Token Not Found"))) {
+        try { await supabase.auth.signOut(); } catch (e) { }
+      }
+      setAuthLoading(false);
     });
 
     // Listen for auth changes

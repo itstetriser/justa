@@ -35,6 +35,11 @@ export default function ManageQuestionsScreen({ navigation }) {
 
     const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
+    // --- EDIT QUESTION STATE ---
+    const [editingQuestion, setEditingQuestion] = useState(null);
+    const [editForm, setEditForm] = useState({});
+    const [savingEdit, setSavingEdit] = useState(false);
+
     // --- FETCH LOGIC (EDIT TAB) ---
     const fetchQuestions = async (reset = false) => {
         if (reset) {
@@ -385,12 +390,9 @@ export default function ManageQuestionsScreen({ navigation }) {
         const lines = selectedQuestions.map((q, index) => {
             const wordBlocks = (q.words || []).map(w => {
                 // Format: {"word"---exp_en:...---"exp_target":"..."}
-                // User requested: {"word"--- exp_en---exp_..(target)}
-
-                // Base: English + Target
                 const expEn = (w.explanations?.['en'] || w.explanations?.['exp_en'] || "").replace(/"/g, "'");
 
-                let block = `"${w.word_text}",---exp_en:"${expEn}"`;
+                let block = `"${w.word_text}"---exp_en:"${expEn}"`;
 
                 if (targetLang) {
                     const expTarget = (w.explanations?.[targetLang] || w.explanations?.[`exp_${targetLang}`] || "").replace(/"/g, "'");
@@ -404,16 +406,191 @@ export default function ManageQuestionsScreen({ navigation }) {
         });
 
         const output = lines.join('\n\n');
-        setLoading(false);
-        setBatchResult(`Done! Success: ${successCount}, Failed: ${failCount}\n${errors.join('\n')}`);
-        if (successCount > 0) {
-            setBatchInput('');
-            // Refresh list if needed (optional)
+        Clipboard.setString(output);
+        Alert.alert("Success", `Copied ${lines.length} questions to clipboard.`);
+        setShowDownloadModal(false);
+    };
+
+    // --- MANUAL EDIT LOGIC ---
+    const openEditModal = (question) => {
+        setEditingQuestion(question);
+        // Deep copy to form
+        setEditForm({
+            id: question.id,
+            sentence_en: question.sentence_en,
+            level: question.level,
+            category: question.category,
+            words: JSON.parse(JSON.stringify(question.words || []))
+        });
+    };
+
+    const handleWordChange = (index, field, value) => {
+        const newWords = [...editForm.words];
+        if (field === 'explanations') {
+            // value is { key, val }
+            if (!newWords[index].explanations) newWords[index].explanations = {};
+            newWords[index].explanations[value.key] = value.val;
+        } else if (field === 'delete_explanation') {
+            const key = value;
+            delete newWords[index].explanations[key];
+        } else {
+            newWords[index][field] = value;
+        }
+        setEditForm({ ...editForm, words: newWords });
+    };
+
+    const handleSaveEdit = async () => {
+        try {
+            setSavingEdit(true);
+            const { error } = await supabase
+                .from('questions')
+                .update({
+                    sentence_en: editForm.sentence_en,
+                    level: editForm.level,
+                    category: editForm.category,
+                    words: editForm.words
+                })
+                .eq('id', editForm.id);
+
+            if (error) throw error;
+
+            Alert.alert("Success", "Question updated!");
+            setEditingQuestion(null);
+
+            // Refresh list item locally
+            setQuestions(prev => prev.map(q => q.id === editForm.id ? { ...q, ...editForm } : q));
+        } catch (e) {
+            Alert.alert("Error", e.message);
+        } finally {
+            setSavingEdit(false);
         }
     };
 
+    const handleDeleteQuestion = async () => {
+        Alert.alert("Confirm Delete", "Are you sure?", [
+            { text: "Cancel", style: "cancel" },
+            {
+                text: "Delete", style: 'destructive', onPress: async () => {
+                    try {
+                        const { error } = await supabase.from('questions').delete().eq('id', editForm.id);
+                        if (error) throw error;
+                        setEditingQuestion(null);
+                        setQuestions(prev => prev.filter(q => q.id !== editForm.id));
+                    } catch (e) {
+                        Alert.alert("Error", e.message);
+                    }
+                }
+            }
+        ]);
+    };
 
     // --- RENDERERS ---
+
+    const renderEditModal = () => (
+        <Modal
+            visible={!!editingQuestion}
+            transparent={true}
+            animationType="slide"
+            onRequestClose={() => setEditingQuestion(null)}
+        >
+            <View style={styles.modalOverlay}>
+                <View style={[styles.modalContent, { height: '90%', width: '95%' }]}>
+                    <Text style={styles.modalTitle}>Edit Question</Text>
+
+                    <ScrollView style={{ width: '100%', marginBottom: 10 }}>
+                        <Text style={styles.label}>Sentence (EN):</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={editForm.sentence_en}
+                            onChangeText={t => setEditForm({ ...editForm, sentence_en: t })}
+                        />
+
+                        <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={styles.label}>Level:</Text>
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}>
+                                    {LEVELS.map(l => (
+                                        <TouchableOpacity
+                                            key={l}
+                                            style={[styles.levelTab, editForm.level === l && styles.activeLevelTab]}
+                                            onPress={() => setEditForm({ ...editForm, level: l })}
+                                        >
+                                            <Text style={[styles.levelText, editForm.level === l && { color: '#fff' }]}>{l}</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </View>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Text style={styles.label}>Category:</Text>
+                                <TextInput
+                                    style={styles.input}
+                                    value={editForm.category}
+                                    onChangeText={t => setEditForm({ ...editForm, category: t })}
+                                />
+                            </View>
+                        </View>
+
+                        <Text style={[styles.label, { marginTop: 20 }]}>Words:</Text>
+                        {editForm.words?.map((word, idx) => (
+                            <View key={idx} style={{ padding: 10, backgroundColor: '#f9f9f9', marginBottom: 10, borderRadius: 8 }}>
+                                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 5 }}>
+                                    <TextInput
+                                        style={[styles.input, { flex: 2 }]}
+                                        value={word.word_text}
+                                        onChangeText={t => handleWordChange(idx, 'word_text', t)}
+                                    />
+                                    <TouchableOpacity
+                                        style={[styles.levelTab, { backgroundColor: word.is_correct ? COLORS.success : '#ccc' }]}
+                                        onPress={() => handleWordChange(idx, 'is_correct', !word.is_correct)}
+                                    >
+                                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>{word.is_correct ? 'CORRECT' : 'WRONG'}</Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#666' }}>Explanations (Key: Value):</Text>
+                                {Object.entries(word.explanations || {}).map(([key, val]) => (
+                                    <View key={key} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+                                        <Text style={{ fontSize: 10, width: 40, fontWeight: 'bold' }}>{key}:</Text>
+                                        <TextInput
+                                            style={[styles.input, { padding: 4, flex: 1, fontSize: 12, height: 30 }]}
+                                            value={val}
+                                            onChangeText={t => handleWordChange(idx, 'explanations', { key, val: t })}
+                                        />
+                                        <TouchableOpacity onPress={() => handleWordChange(idx, 'delete_explanation', key)}>
+                                            <Text style={{ color: COLORS.error, marginLeft: 5 }}>×</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                ))}
+                                {/* Add new explanation row? Simplified: Just allow editing existing for now, or add button */}
+                                <TouchableOpacity
+                                    style={{ marginTop: 5 }}
+                                    onPress={() => {
+                                        const k = prompt("Enter language code (e.g. tr, en):", "en");
+                                        if (k) handleWordChange(idx, 'explanations', { key: k, val: "" });
+                                    }}
+                                >
+                                    <Text style={{ fontSize: 10, color: COLORS.primary }}>+ Add Explanation</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ))}
+                    </ScrollView>
+
+                    <View style={{ flexDirection: 'row', gap: 10, width: '100%' }}>
+                        <TouchableOpacity style={[styles.primaryBtn, { flex: 1, marginTop: 0, backgroundColor: COLORS.error }]} onPress={handleDeleteQuestion}>
+                            <Text style={styles.btnText}>Delete</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.primaryBtn, { flex: 1, marginTop: 0 }]} onPress={handleSaveEdit}>
+                            {savingEdit ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save Changes</Text>}
+                        </TouchableOpacity>
+                    </View>
+
+                    <TouchableOpacity onPress={() => setEditingQuestion(null)} style={{ marginTop: 15 }}>
+                        <Text style={{ color: '#999' }}>Cancel</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        </Modal>
+    );
 
     const renderAddTab = () => (
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
@@ -542,11 +719,14 @@ export default function ManageQuestionsScreen({ navigation }) {
                         <View style={{ width: 30, alignItems: 'center' }}>
                             <Text style={{ fontSize: 12, color: '#999' }}>{index + 1}</Text>
                         </View>
-                        <View style={{ flex: 1, paddingHorizontal: 10 }}>
+                        <TouchableOpacity
+                            style={{ flex: 1, paddingHorizontal: 10 }}
+                            onPress={() => openEditModal(item)}
+                        >
                             <Text style={styles.rowText} numberOfLines={2}>{item.sentence_en}</Text>
                             <Text style={{ fontSize: 10, color: '#999' }}>{item.category} • {item.words?.length} words</Text>
-                            <Text style={{ fontSize: 8, color: '#ccc' }}>{item.id}</Text>
-                        </View>
+                            <Text style={{ fontSize: 8, color: '#ccc' }}>Tap to Edit • {item.id}</Text>
+                        </TouchableOpacity>
                         <View style={styles.checkbox}>
                             {selectedIds.has(item.id) && <Text style={{ color: COLORS.primary }}>✓</Text>}
                         </View>
@@ -614,6 +794,7 @@ export default function ManageQuestionsScreen({ navigation }) {
             {activeTab === 'ADD' ? renderAddTab() : renderEditTab()}
             {renderDownloadModal()}
             {renderBatchModal()}
+            {renderEditModal()}
         </View>
     );
 }

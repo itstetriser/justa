@@ -1,37 +1,27 @@
 
 import React, { useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl, Modal, Alert, Image, Animated, TextInput, KeyboardAvoidingView, Platform, Dimensions } from 'react-native';
-import { FontAwesome5, Feather } from '@expo/vector-icons';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl, Modal, Alert, Image, Animated, Dimensions } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchUserProfile, fetchLevelCounts, resetSeenQuestions, fetchUserLevelProgress, updateUserLevel, updateDailyGoal } from '../lib/api';
-import { COLORS, SHADOWS } from '../lib/theme';
+import { fetchUserProfile, fetchUserStats, fetchLevelCounts, resetSeenQuestions, fetchUserLevelProgress } from '../lib/api';
+import { COLORS, SHADOWS, LAYOUT } from '../lib/theme';
 import { getTranslation } from '../lib/translations';
-import { ThemedText } from '../components/ThemedText';
 
+const { width } = Dimensions.get('window');
+
+// Level Tree Cycle Icons
 const LEVEL_ICONS = {
-    'A1': 'seedling',
-    'A2': 'leaf',
-    'B1': 'tree',
-    'B2': 'pagelines',
-    'C1': 'medal',
-    'C2': 'crown',
-};
-
-// Map levels to specific visual elements (colors, icons) if needed more granularly
-const LEVEL_THEMES = {
-    'A1': { color: '#8BC34A', icon: 'seedling', label: 'A1' },
-    'A2': { color: '#4CAF50', icon: 'leaf', label: 'A2' },
-    'B1': { color: '#00BCD4', icon: 'tree', label: 'B1' },
-    'B2': { color: '#2196F3', icon: 'pagelines', label: 'B2' },
-    'C1': { color: '#9C27B0', icon: 'medal', label: 'C1' },
-    'C2': { color: '#E91E63', icon: 'crown', label: 'C2' },
+    'A1': '🌱', // Seedling
+    'A2': '🌿', // Herb
+    'B1': '🌳', // Tree
+    'B2': '🌲', // Evergreen
+    'C1': '🍎', // Fruit Tree
+    'C2': '🏞️'  // Forest/Landscape
 };
 
 export default function HomeScreen({ navigation }) {
     const [userId, setUserId] = useState(null);
-    const [userIdLoading, setUserIdLoading] = useState(true);
 
     // Practice & Modal States
     const [showPracticeModal, setShowPracticeModal] = useState(false);
@@ -39,22 +29,13 @@ export default function HomeScreen({ navigation }) {
     const [loadingPractice, setLoadingPractice] = useState(false);
     const [showResetModal, setShowResetModal] = useState(false);
     const [includeMistakesInReset, setIncludeMistakesInReset] = useState(false);
-    const [isHardMode, setIsHardMode] = useState(false); // Default: Easy Mode
 
-    // Config Modals
-    const [showLevelModal, setShowLevelModal] = useState(false);
-    const [showGoalModal, setShowGoalModal] = useState(false);
-    const [newDailyGoal, setNewDailyGoal] = useState('50');
-    const [updatingConfig, setUpdatingConfig] = useState(false);
-
-    const queryClient = useQueryClient();
     const progressAnim = React.useRef(new Animated.Value(0)).current;
 
     // 1. Auth & Data Fetching
     React.useEffect(() => {
         supabase.auth.getSession().then(({ data: { session } }) => {
             if (session?.user) setUserId(session.user.id);
-            setUserIdLoading(false);
         });
     }, []);
 
@@ -64,12 +45,16 @@ export default function HomeScreen({ navigation }) {
         enabled: !!userId,
     });
 
-    // Helpers
-    const currentLevel = (profile?.current_level || 'A1').toUpperCase();
-    const appLang = profile?.app_lang || 'en';
-    const t = (key) => getTranslation(appLang, key);
+    const { data: userStats, refetch: refetchStats } = useQuery({
+        queryKey: ['userStats', userId],
+        queryFn: () => fetchUserStats(userId),
+        enabled: !!userId
+    });
 
-    const { data: levelCounts, refetch: refetchCounts } = useQuery({
+    const currentLevel = (profile?.current_level || 'A1').toUpperCase();
+
+    // Fetch counts specifically for the main "Practice" card display
+    const { data: currentLevelCounts, refetch: refetchLevelCounts } = useQuery({
         queryKey: ['levelCounts', userId, currentLevel],
         queryFn: () => fetchLevelCounts(userId, currentLevel),
         enabled: !!userId && !!currentLevel
@@ -79,10 +64,15 @@ export default function HomeScreen({ navigation }) {
         useCallback(() => {
             if (userId) {
                 refetch();
-                refetchCounts();
+                refetchStats();
+                refetchLevelCounts();
             }
-        }, [userId, refetch, refetchCounts])
+        }, [userId, refetch, refetchStats, refetchLevelCounts])
     );
+
+    // Helpers
+    const appLang = profile?.app_lang || 'en';
+    const t = (key) => getTranslation(appLang, key);
 
     // Animation for Daily Goal
     React.useEffect(() => {
@@ -96,65 +86,51 @@ export default function HomeScreen({ navigation }) {
         }).start();
     }, [profile]);
 
-    // Update the local state for Goal Modal when profile loads
-    React.useEffect(() => {
-        if (profile?.daily_goal) {
-            setNewDailyGoal(String(profile.daily_goal));
-        }
-    }, [profile]);
-
     const handleStartPractice = async () => {
-        setLoadingPractice(true);
-        try {
-            const counts = await fetchLevelCounts(userId, currentLevel);
-            setPracticeCounts({ ...counts }); // Safely spread since fetchLevelCounts returns an object
-
-            if (counts.newCount > 0) {
-                navigation.navigate('Game', {
-                    level: currentLevel,
-                    gameMode: 'NEW',
-                    appLang: profile?.app_lang,
-                    userLang: profile?.native_lang,
-                    isPremium: profile?.is_premium,
-                    isHardMode: isHardMode
+        setShowPracticeModal(true);
+        // If we already have fresh data from useQuery, use it, else generic update
+        if (currentLevelCounts) {
+            setPracticeCounts({
+                new: currentLevelCounts.newCount,
+                mistakes: currentLevelCounts.mistakeCount,
+                favorites: currentLevelCounts.favoriteCount,
+            });
+        } else {
+            setLoadingPractice(true);
+            try {
+                const counts = await fetchLevelCounts(userId, currentLevel);
+                setPracticeCounts({
+                    new: counts.newCount,
+                    mistakes: counts.mistakeCount,
+                    favorites: counts.favoriteCount,
                 });
-            } else {
-                setShowResetModal(true);
-            }
-        } catch (e) {
-            Alert.alert(t('oops'), 'Failed to start practice');
-        } finally {
-            setLoadingPractice(false);
+            } catch (e) { console.error(e); }
+            finally { setLoadingPractice(false); }
         }
     };
 
     const handleLaunchGame = async (mode) => {
-        // Reuse logic for Mistakes/Favorites
-        if (mode === 'REVIEW' || mode === 'FAVORITES') {
-            try {
-                const progress = await fetchUserLevelProgress(userId, currentLevel);
-                if (mode === 'REVIEW') {
-                    const mistakeCount = Object.keys(progress.mistakes || {}).length;
-                    if (mistakeCount === 0) {
-                        Alert.alert(t('oops'), t('noMistakes') || "No mistakes to review!");
-                        return;
-                    }
-                } else if (mode === 'FAVORITES') {
-                    if (!progress.favorite_ids || progress.favorite_ids.length === 0) {
-                        Alert.alert(t('oops'), t('noFavoritesDesc') || "No favorites found.");
-                        return;
-                    }
-                }
-            } catch (e) { console.warn(e); }
+        if (mode === 'NEW' && practiceCounts.new === 0) {
+            setShowResetModal(true);
+            return;
+        }
+        if (mode === 'REVIEW' && practiceCounts.mistakes === 0) {
+            Alert.alert(t('oops'), t('noMistakes') || "No mistakes to review!");
+            return;
+        }
+        if (mode === 'FAVORITES' && practiceCounts.favorites === 0) {
+            Alert.alert(t('oops'), t('noFavoritesDesc') || "No favorites found.");
+            return;
         }
 
+        setShowPracticeModal(false);
         navigation.navigate('Game', {
             level: currentLevel,
-            gameMode: mode,
+            category: null,
             appLang: profile?.app_lang,
             userLang: profile?.native_lang,
             isPremium: profile?.is_premium,
-            isHardMode: isHardMode
+            gameMode: mode
         });
     };
 
@@ -166,170 +142,159 @@ export default function HomeScreen({ navigation }) {
                 Alert.alert(t('oops'), "Nothing to restart.");
                 return;
             }
-            await handleStartPractice();
+            refetchLevelCounts();
             setShowResetModal(false);
+            setShowPracticeModal(false);
+            navigation.navigate('Game', {
+                level: currentLevel,
+                gameMode: 'NEW',
+                appLang: profile?.app_lang,
+                userLang: profile?.native_lang
+            });
         } catch (err) { Alert.alert('Error', 'Failed to restart'); }
         finally { setLoadingPractice(false); }
     };
 
-    const handleUpdateLevel = async (newLevel) => {
-        try {
-            setUpdatingConfig(true);
-            await updateUserLevel(userId, newLevel);
-            await refetch();
-            setShowLevelModal(false);
-        } catch (e) {
-            Alert.alert('Error', 'Failed to update level');
-        } finally {
-            setUpdatingConfig(false);
-        }
-    };
-
-    const handleSaveGoal = async () => {
-        const val = parseInt(newDailyGoal);
-        if (isNaN(val) || val <= 0) {
-            Alert.alert("Invalid Goal", "Please enter a valid number");
-            return;
-        }
-        try {
-            setUpdatingConfig(true);
-            await updateDailyGoal(userId, val);
-            await refetch();
-            setShowGoalModal(false);
-        } catch (e) {
-            Alert.alert("Error", "Failed to update daily goal");
-        } finally {
-            setUpdatingConfig(false);
-        }
-    };
-
-    if ((isLoading && !profile) || userIdLoading) {
+    if (isLoading && !profile) {
         return <View style={styles.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
     }
 
-    // Goal Calculation
-    const dailyScore = profile?.score_daily || 0;
-    const dailyGoal = profile?.daily_goal || 100;
-    const progressPercent = Math.min((dailyScore / dailyGoal) * 100, 100);
-    const remaining = Math.max(dailyGoal - dailyScore, 0);
-
-    // Other Levels list
-    const allLevels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
-    const otherLevels = allLevels.filter(l => l !== currentLevel); // Show all others
+    const sentencesSeen = currentLevelCounts?.seenCount || 0;
+    const dailyGoalPoints = profile?.daily_goal || 100;
+    const currentPoints = profile?.score_daily || 0;
+    const pointsLeft = Math.max(0, dailyGoalPoints - currentPoints);
 
     return (
         <View style={styles.container}>
             <ScrollView
                 contentContainerStyle={styles.scrollContent}
-                showsVerticalScrollIndicator={false}
                 refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={COLORS.primary} />}
+                showsVerticalScrollIndicator={false}
             >
-                {/* Header */}
-                <View style={styles.header}>
-                    <ThemedText style={styles.headerTitle} weight="bold">Welcome back, {profile?.username || 'Mina'}.</ThemedText>
-                    <TouchableOpacity onPress={() => navigation.navigate('Profile')}>
-                        <Feather name="menu" size={24} color={COLORS.slate[600]} />
+                {/* 1. Header */}
+                <View style={styles.headerRow}>
+                    <Text style={styles.headerTitle}>Welcome back, {profile?.username || 'Learner'}.</Text>
+                    <TouchableOpacity onPress={() => navigation.navigate('Settings')}>
+                        <Text style={{ fontSize: 24 }}>☰</Text>
                     </TouchableOpacity>
                 </View>
 
-                {/* Daily Goal */}
-                <View style={styles.sectionHeaderRow}>
-                    <ThemedText style={styles.sectionTitle} weight="medium">{t('dailyGoal') || 'Daily goal'}</ThemedText>
-                    <TouchableOpacity onPress={() => setShowGoalModal(true)}>
-                        <ThemedText style={styles.editLink}>{t('edit') || 'Edit'}</ThemedText>
+                {/* 2. Daily Goal Section */}
+                <View style={[styles.sectionHeading, { marginTop: 10 }]}>
+                    <Text style={styles.sectionTitle}>{t('dailyGoal')}</Text>
+                    <TouchableOpacity onPress={() => navigation.navigate('Settings')}>
+                        <Text style={styles.editLink}>Edit</Text>
                     </TouchableOpacity>
                 </View>
 
-                <View style={styles.goalCard}>
-                    <ThemedText style={styles.goalMessage}>
-                        {progressPercent >= 100 ? "Goal reached! Great job!" :
-                            progressPercent >= 50 ? "Halfway there! Keep going." :
-                                "Let's get started!"}
-                    </ThemedText>
+                <View style={styles.dailyGoalCard}>
+                    <Text style={styles.dailyGoalText}>
+                        {pointsLeft > 0
+                            ? "Halfway there! Keep going."
+                            : "Goal reached! Amazing work! 🎉"}
+                    </Text>
 
-                    <ThemedText style={styles.goalPointsText} weight="medium">{dailyGoal} points</ThemedText>
-                    <View style={styles.progressRow}>
-                        <View style={styles.sliderContainer}>
-                            <Animated.View style={[
-                                styles.sliderFill,
-                                { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }
-                            ]} />
-                        </View>
-                        <ThemedText style={styles.remainingText} weight="medium">{remaining} left</ThemedText>
+                    <View style={styles.progressContainer}>
+                        <Text style={styles.progressLabel}>{currentPoints} points</Text>
+                        <Text style={styles.progressLabelRight}>{pointsLeft} left</Text>
+                    </View>
+
+                    <View style={styles.progressBarBg}>
+                        <Animated.View style={[styles.progressBarFill, {
+                            width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] })
+                        }]} />
                     </View>
                 </View>
 
-                {/* Practice */}
-                <ThemedText style={styles.sectionTitle} weight="medium">{t('practice') || 'Practice'}</ThemedText>
-                <View style={styles.practiceCard}>
-                    <ThemedText style={styles.practiceText}>
-                        You have seen <ThemedText weight="bold" style={{ color: COLORS.slate[900] }}>{levelCounts?.seenCount || 0}</ThemedText> sentences in <ThemedText weight="bold" style={{ color: COLORS.slate[900] }}>{currentLevel}</ThemedText> level.
-                    </ThemedText>
 
-                    <TouchableOpacity
-                        style={styles.startPracticeBtn}
-                        onPress={handleStartPractice}
-                        disabled={loadingPractice}
-                    >
-                        {loadingPractice ? (
-                            <ActivityIndicator color="#fff" />
-                        ) : (
-                            <ThemedText style={styles.startPracticeBtnText} weight="medium">{t('startPractice') || 'Start Practice'}</ThemedText>
-                        )}
+                {/* 3. Practice Section */}
+                <Text style={[styles.sectionTitle, { marginTop: 30 }]}>Practice</Text>
+                <View style={styles.practiceCard}>
+                    <Text style={styles.practiceText}>
+                        You have seen <Text style={{ fontWeight: 'bold' }}>{sentencesSeen}</Text> sentences in <Text style={{ fontWeight: 'bold' }}>{currentLevel}</Text> level.
+                    </Text>
+
+                    <TouchableOpacity style={styles.startPracticeBtn} onPress={handleStartPractice}>
+                        <Text style={styles.startPracticeBtnText}>{t('startPractice') || "Start Practice"}</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={{ marginTop: 20 }} onPress={() => handleLaunchGame('REVIEW')}>
-                        <ThemedText style={styles.reviewMistakesText}>{t('reviewMistakes') || 'Review Mistakes'}</ThemedText>
+                    <TouchableOpacity onPress={() => handleStartPractice()}>
+                        {/* Re-using modal logic for Review, or specific logic if needed */}
+                        <Text style={styles.reviewMistakesLink}>Review Mistakes</Text>
                     </TouchableOpacity>
                 </View>
 
-                {/* Other Levels */}
-                <ThemedText style={styles.sectionTitle} weight="medium">{t('otherLevels') || 'Other levels'}</ThemedText>
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.levelsContainer}
-                >
-                    {otherLevels.map((lvl) => (
-                        <TouchableOpacity
-                            key={lvl}
-                            style={styles.levelCircleWrapper}
-                            onPress={() => handleUpdateLevel(lvl)}
-                        >
-                            <View style={styles.levelCircleItem}>
-                                <ThemedText style={styles.levelCircleLabel} weight="bold">{lvl}</ThemedText>
+
+                {/* 4. Other Levels (Tree Lifecycle) */}
+                <Text style={[styles.sectionTitle, { marginTop: 30 }]}>Other Levels</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ overflow: 'visible' }}>
+                    {['A1', 'A2', 'B1', 'B2', 'C1'].map((lvl) => (
+                        <TouchableOpacity key={lvl} style={styles.levelCircleContainer}>
+                            <View style={[styles.levelCircle, lvl === currentLevel && styles.levelCircleActive]}>
+                                <Text style={{ fontSize: 32 }}>{LEVEL_ICONS[lvl] || '🌱'}</Text>
                             </View>
+                            <Text style={[styles.levelLabel, lvl === currentLevel && { fontWeight: 'bold', color: COLORS.primary }]}>{lvl}</Text>
+                            {lvl === currentLevel && <View style={styles.activeDot} />}
                         </TouchableOpacity>
                     ))}
                 </ScrollView>
 
-                {/* Statistics */}
-                <ThemedText style={styles.sectionTitle} weight="medium">{t('statistics') || 'Statistics'}</ThemedText>
-                <View style={[styles.statCard, { backgroundColor: COLORS.cardYellow }]}>
-                    <ThemedText style={styles.statLabel}>{t('currentStreak') || 'Current streak'}:</ThemedText>
-                    <ThemedText style={styles.statValue} weight="bold">{profile?.streak_count || 0} <ThemedText style={styles.statUnit}>days</ThemedText></ThemedText>
+
+                {/* 5. Statistics (Vertical List) */}
+                <Text style={[styles.sectionTitle, { marginTop: 30 }]}>Statistics</Text>
+
+                <View style={styles.statRow}>
+                    <Text style={styles.statRowLabel}>Current streak:</Text>
+                    <Text style={styles.statRowValue}>{profile?.streak_count || 0} <Text style={{ fontWeight: 'normal', fontSize: 14 }}>Days</Text></Text>
                 </View>
 
-                <View style={[styles.statCard, { backgroundColor: COLORS.white }]}>
-                    <ThemedText style={styles.statLabel}>{t('longestStreak') || 'Longest streak'}:</ThemedText>
-                    <ThemedText style={styles.statValue} weight="bold">{profile?.best_streak || 0} <ThemedText style={styles.statUnit}>days</ThemedText></ThemedText>
+                <View style={styles.statRow}>
+                    <Text style={styles.statRowLabel}>Longest streak:</Text>
+                    <Text style={styles.statRowValue}>{userStats?.max_streak || profile?.streak_count || 0} <Text style={{ fontWeight: 'normal', fontSize: 14 }}>Days</Text></Text>
                 </View>
 
-                <View style={[styles.statCard, { backgroundColor: COLORS.cardYellow }]}>
-                    <ThemedText style={styles.statLabel}>{t('pointsThisWeek') || 'Points this week'}:</ThemedText>
-                    <ThemedText style={styles.statValue} weight="bold">{profile?.score_weekly || 0}</ThemedText>
+                <View style={styles.statRow}>
+                    <Text style={styles.statRowLabel}>Points this week:</Text>
+                    <Text style={styles.statRowValue}>{profile?.score_weekly || 0}</Text>
                 </View>
 
-                <TouchableOpacity style={styles.seeAllBtn} onPress={() => navigation.navigate('Stats')}>
-                    <ThemedText style={styles.seeAllText}>{t('seeAll') || 'See all'}</ThemedText>
+                <TouchableOpacity style={{ alignItems: 'center', marginTop: 15 }} onPress={() => navigation.navigate('Statistics')}>
+                    <Text style={{ color: COLORS.textSecondary }}>See all</Text>
                 </TouchableOpacity>
 
-                <View style={{ height: 100 }} />
+                <View style={{ height: 50 }} />
             </ScrollView>
 
             {/* --- MODALS --- */}
+            <Modal
+                visible={showPracticeModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowPracticeModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <Text style={styles.modalTitle}>{t('startPractice')}</Text>
+                        {loadingPractice ? <ActivityIndicator color={COLORS.primary} /> : (
+                            <>
+                                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: COLORS.primary }]} onPress={() => handleLaunchGame('NEW')}>
+                                    <Text style={styles.modalBtnText}>{t('newQuestions')} ({practiceCounts.new})</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: COLORS.secondary }]} onPress={() => handleLaunchGame('FAVORITES')}>
+                                    <Text style={styles.modalBtnText}>{t('favoriteQuestions')} ({practiceCounts.favorites})</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.modalBtn, { backgroundColor: COLORS.error }]} onPress={() => handleLaunchGame('REVIEW')}>
+                                    <Text style={styles.modalBtnText}>{t('retryMistakes')} ({practiceCounts.mistakes})</Text>
+                                </TouchableOpacity>
+                            </>
+                        )}
+                        <TouchableOpacity onPress={() => setShowPracticeModal(false)} style={{ marginTop: 15 }}>
+                            <Text style={{ color: '#666' }}>{t('cancel')}</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
 
-            {/* Reset Modal */}
             <Modal
                 visible={showResetModal}
                 transparent={true}
@@ -338,58 +303,26 @@ export default function HomeScreen({ navigation }) {
             >
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
-                        <Text style={{ fontSize: 40, marginBottom: 10 }}>🎉</Text>
-                        <ThemedText style={styles.modalTitle} weight="bold">{t('congrats') || "All Caught Up!"}</ThemedText>
-                        <ThemedText style={{ textAlign: 'center', marginBottom: 20, color: '#666' }}>
-                            {t('restartDesc') || "You've seen all questions in this level."}
-                        </ThemedText>
+                        <Text style={{ fontSize: 40, marginBottom: 10 }}>↻</Text>
+                        <Text style={styles.modalTitle}>{t('restartList')}</Text>
+                        <Text style={{ textAlign: 'center', marginBottom: 20, color: '#666' }}>{t('restartDesc')}</Text>
+
+                        <TouchableOpacity
+                            style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20, padding: 10, backgroundColor: COLORS.backgroundSecondary, borderRadius: 10, width: '100%' }}
+                            onPress={() => setIncludeMistakesInReset(!includeMistakesInReset)}
+                        >
+                            <View style={{ width: 20, height: 20, borderWidth: 1, borderColor: COLORS.primary, marginRight: 10, backgroundColor: includeMistakesInReset ? COLORS.primary : 'transparent' }} />
+                            <Text>{t('addMistakenToNew')}</Text>
+                        </TouchableOpacity>
+
                         <TouchableOpacity style={[styles.modalBtn, { backgroundColor: COLORS.primary }]} onPress={confirmDeckReset}>
-                            <ThemedText style={styles.modalBtnText} weight="bold">{t('restartList') || "Restart Level"}</ThemedText>
+                            <Text style={styles.modalBtnText}>{t('confirmRestart')}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity onPress={() => setShowResetModal(false)} style={{ marginTop: 15 }}>
-                            <ThemedText style={{ color: '#666' }}>{t('cancel')}</ThemedText>
+                            <Text style={{ color: '#666' }}>{t('cancel')}</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
-            </Modal>
-
-            {/* Daily Goal Modal */}
-            <Modal
-                visible={showGoalModal}
-                transparent={true}
-                animationType="slide"
-                onRequestClose={() => setShowGoalModal(false)}
-            >
-                <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <ThemedText style={styles.modalTitle} weight="bold">{t('setDailyGoal') || "Set Daily Goal"}</ThemedText>
-
-                        <TextInput
-                            style={styles.input}
-                            value={newDailyGoal}
-                            onChangeText={setNewDailyGoal}
-                            keyboardType="numeric"
-                            placeholder="e.g. 100"
-                        />
-
-                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20, justifyContent: 'center' }}>
-                            {[50, 100, 200, 500].map(val => (
-                                <TouchableOpacity key={val} onPress={() => setNewDailyGoal(String(val))} style={{ padding: 8, backgroundColor: COLORS.slate[100], borderRadius: 8 }}>
-                                    <ThemedText>{val} pts</ThemedText>
-                                </TouchableOpacity>
-                            ))}
-                        </View>
-
-                        {updatingConfig ? <ActivityIndicator color={COLORS.primary} /> : (
-                            <TouchableOpacity style={[styles.modalBtn, { backgroundColor: COLORS.primary }]} onPress={handleSaveGoal}>
-                                <ThemedText style={styles.modalBtnText} weight="bold">{t('save') || "Save"}</ThemedText>
-                            </TouchableOpacity>
-                        )}
-                        <TouchableOpacity onPress={() => setShowGoalModal(false)} style={{ marginTop: 15 }}>
-                            <ThemedText style={{ color: '#666' }}>{t('cancel')}</ThemedText>
-                        </TouchableOpacity>
-                    </View>
-                </KeyboardAvoidingView>
             </Modal>
         </View>
     );
@@ -398,206 +331,176 @@ export default function HomeScreen({ navigation }) {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#FFFFFF', // White bg as per image
+        backgroundColor: COLORS.background,
+        paddingTop: 50, // Safe area roughly
+    },
+    scrollContent: {
+        paddingHorizontal: 25,
+        paddingBottom: 40,
     },
     center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    scrollContent: {
-        padding: 24,
-        paddingTop: 60,
-    },
-    header: {
+
+    // Header
+    headerRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 32,
+        marginBottom: 30
     },
     headerTitle: {
-        fontSize: 18, // Checked: bold 18
-        color: COLORS.textMain,
+        fontSize: 22,
+        fontWeight: '700',
+        color: COLORS.textPrimary,
     },
-    sectionHeaderRow: {
+
+    // Sections
+    sectionHeading: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 12,
+        marginBottom: 10
     },
     sectionTitle: {
-        fontSize: 22, // Checked: medium 22
-        color: COLORS.textMain,
-        marginBottom: 16, // Spacing might need adj, but fontSize is key
-        marginTop: 10,
+        fontSize: 20,
+        fontWeight: '600',
+        color: COLORS.textPrimary,
+        marginBottom: 10
     },
     editLink: {
+        color: COLORS.textSecondary,
         fontSize: 14,
-        color: COLORS.slate[500],
     },
 
     // Daily Goal Card
-    goalCard: {
-        backgroundColor: COLORS.cardYellow,
-        borderRadius: 8,
+    dailyGoalCard: {
+        backgroundColor: COLORS.cream,
+        borderRadius: 16,
         padding: 20,
-        marginBottom: 32,
+        marginBottom: 10
     },
-    goalMessage: {
-        fontSize: 16, // Checked: regular 16
-        color: COLORS.textMain,
+    dailyGoalText: {
+        fontSize: 16,
+        color: '#5D4037', // Brownish text for cream bg
         textAlign: 'center',
-        marginBottom: 16,
+        marginBottom: 15
     },
-    progressRow: {
+    progressContainer: {
         flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 8,
+        justifyContent: 'space-between',
+        marginBottom: 5
     },
-    sliderContainer: {
-        flex: 1,
-        height: 12,
+    progressLabel: { fontSize: 12, color: '#5D4037' },
+    progressLabelRight: { fontSize: 12, color: '#5D4037' },
+    progressBarBg: {
+        height: 10,
         backgroundColor: '#FFFFFF',
-        borderRadius: 6,
-        marginRight: 12,
-        overflow: 'hidden',
+        borderRadius: 5,
+        overflow: 'hidden'
     },
-    sliderFill: {
+    progressBarFill: {
         height: '100%',
-        backgroundColor: COLORS.progressBar,
-        borderRadius: 6,
-    },
-    remainingText: {
-        fontSize: 13, // Checked: medium 13
-        color: COLORS.textMain,
-    },
-    goalPointsText: {
-        fontSize: 13, // Checked: medium 13
-        color: COLORS.textMain,
-        marginBottom: 4,
+        backgroundColor: '#607D8B', // BlueGray from example
+        borderRadius: 5
     },
 
     // Practice Card
     practiceCard: {
-        backgroundColor: COLORS.cardGray,
-        borderRadius: 8,
-        padding: 24,
+        backgroundColor: COLORS.mint,
+        borderRadius: 16,
+        padding: 25,
         alignItems: 'center',
-        marginBottom: 32,
+        marginBottom: 10
     },
     practiceText: {
-        fontSize: 16, // Checked: regular 16
-        color: COLORS.textMain,
+        fontSize: 16,
+        color: '#37474F',
         textAlign: 'center',
-        marginBottom: 24,
-        lineHeight: 24,
+        marginBottom: 20,
+        lineHeight: 22
     },
     startPracticeBtn: {
-        backgroundColor: '#0F172A',
-        width: '80%',
+        backgroundColor: COLORS.primary,
         paddingVertical: 14,
-        borderRadius: 6,
+        paddingHorizontal: 40,
+        borderRadius: 8,
+        width: '100%',
         alignItems: 'center',
-        ...SHADOWS.small
+        marginBottom: 15
     },
     startPracticeBtnText: {
-        color: '#FFFFFF',
-        fontSize: 16,
+        color: '#fff',
+        fontWeight: '600',
+        fontSize: 16
     },
-    reviewMistakesText: {
-        color: '#475569',
+    reviewMistakesLink: {
+        color: COLORS.textSecondary,
         fontSize: 14,
-        textDecorationLine: 'underline',
+        textDecorationLine: 'underline'
     },
 
-    // Levels (Circular)
-    levelsContainer: {
-        flexDirection: 'row',
-        marginBottom: 32,
-        gap: 16,
-        paddingRight: 24, // Padding for end of scroll
-    },
-    levelCircleWrapper: {
+    // Levels
+    levelCircleContainer: {
         alignItems: 'center',
-        justifyContent: 'center',
-    },
-    levelCircleItem: {
+        marginRight: 20,
         width: 80,
-        height: 80,
-        borderRadius: 40,
-        backgroundColor: '#FFFFFF',
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        alignItems: 'center',
-        justifyContent: 'center',
-        ...SHADOWS.small,
     },
-    levelCircleLabel: {
-        fontSize: 24, // Increased size
-        color: COLORS.textMain,
+    levelCircle: {
+        width: 70, height: 70,
+        borderRadius: 35,
+        borderWidth: 1,
+        borderColor: '#E0E0E0',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 8,
+        backgroundColor: '#fff',
+        ...SHADOWS.small
+    },
+    levelCircleActive: {
+        borderColor: COLORS.primary,
+        borderWidth: 2,
+    },
+    levelLabel: {
+        fontSize: 16,
+        color: COLORS.textSecondary
+    },
+    activeDot: {
+        width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.primary,
+        marginTop: 4
     },
 
-    // Statistics
-    statCard: {
+    // Stats
+    statRow: {
+        backgroundColor: COLORS.cream,
+        borderRadius: 12,
+        padding: 15,
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 16,
-        borderRadius: 8,
-        marginBottom: 16,
+        marginBottom: 10
     },
-    statLabel: {
-        fontSize: 16, // Checked: regular 16
-        color: COLORS.textMain,
+    statRowLabel: {
+        fontSize: 16,
+        color: '#5D4037'
     },
-    statValue: {
-        fontSize: 16, // Checked: bold 16
-        color: COLORS.textMain,
-    },
-    statUnit: {
-        fontSize: 14,
-        fontWeight: 'normal',
-        color: '#64748B',
-    },
-    seeAllBtn: {
-        alignItems: 'center',
-        padding: 16,
-        backgroundColor: 'transparent'
-    },
-    seeAllText: {
-        color: '#475569',
-        fontSize: 14,
-        // textDecorationLine: 'underline', // Image doesn't show underline maybe?
+    statRowValue: {
+        fontSize: 16,
+        fontWeight: 'bold',
+        color: '#102A43'
     },
 
-    // Modal
+    // Modals (kept same styling, just simplified class names)
     modalOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        justifyContent: 'center',
-        alignItems: 'center',
+        flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'center', alignItems: 'center'
     },
     modalContent: {
-        width: '85%', maxWidth: 400, backgroundColor: '#fff', borderRadius: 20,
+        width: '85%', backgroundColor: '#fff', borderRadius: 20,
         padding: 25, alignItems: 'center', ...SHADOWS.large
     },
-    modalTitle: {
-        fontSize: 22, marginBottom: 15,
-        color: COLORS.slate[800],
-        textAlign: 'center',
-    },
+    modalTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 15 },
     modalBtn: {
         width: '100%', paddingVertical: 15, borderRadius: 12,
         alignItems: 'center', marginBottom: 10
     },
-    modalBtnText: {
-        color: '#fff',
-    },
-    input: {
-        width: '100%',
-        padding: 15,
-        borderWidth: 1,
-        borderColor: COLORS.slate[300],
-        borderRadius: 12,
-        marginBottom: 20,
-        fontSize: 18,
-        textAlign: 'center',
-        fontFamily: 'Satoshi-Regular'
-    }
+    modalBtnText: { color: '#fff', fontWeight: 'bold' }
 });
